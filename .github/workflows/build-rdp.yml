@@ -113,3 +113,11 @@ jobs:
           name: ace-remote-rdp-arm64
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+      - name: Upload to Firebase App Distribution
+        uses: wzieba/firebase-distribution-github-action@v1
+        with:
+          appId: 1:443475386602:android:51276f708ef1ddcf293793
+          serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          file: build/app/outputs/flutter-apk/app-release.apk
+          testers: steve411ace@gmail.com
+          releaseNotes: "Ace Remote RDP prototype — nối RDP thật (branch rdp-prototype). Bản RDP-only, KHÔNG phải v1.4 agent-mode."
