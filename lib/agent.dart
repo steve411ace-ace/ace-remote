@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 const defaultBaseUrl = 'http://100.101.127.41:18765';
 // /type accepts raw text: the Windows agent owns SendKeys escaping.
 String sendKeysChord(String chord) {
+  if (chord.split('+').contains('Win')) return chord;
   const modifiers = {'Ctrl': '^', 'Alt': '%', 'Shift': '+'};
   const special = {
     'Enter': 'ENTER',
@@ -32,8 +33,10 @@ String sendKeysChord(String chord) {
 }
 
 class DisplayInfo {
-  const DisplayInfo(this.id, this.x, this.y, this.width, this.height);
+  const DisplayInfo(this.id, this.x, this.y, this.width, this.height,
+      {this.screenshotIndex = 0});
   final int id, x, y, width, height;
+  final int screenshotIndex;
   Rect cropRect(Offset origin, Size virtualSize, Size imageSize) =>
       Rect.fromLTWH(
           (x - origin.dx) * imageSize.width / virtualSize.width,
@@ -118,7 +121,7 @@ class Agent {
     if (mock) {
       displays = [
         const DisplayInfo(1, 0, 0, 1920, 1080),
-        const DisplayInfo(2, -1920, 0, 1536, 864)
+        const DisplayInfo(2, -1920, 0, 1536, 864, screenshotIndex: 1)
       ];
       capabilities = {'select_monitor', 'power', 'mouse_drag', 'relative_move'};
       record('GET /health → 200 (mô phỏng)');
@@ -139,17 +142,22 @@ class Agent {
         // width/height describe PrimaryScreen, never the virtual desktop.
         final screens =
             List<dynamic>.from(body['screens'] ?? body['monitors'] ?? []);
+        final indexedScreens = [
+          for (var i = 0; i < screens.length; i++)
+            {...screens[i] as Map, '_screenshotIndex': i}
+        ];
         // Primary first gives stable, familiar tab numbering even when Windows
         // enumerates the negative-origin secondary screen first.
-        screens.sort((a, b) => (b['primary'] == true ? 1 : 0)
+        indexedScreens.sort((a, b) => (b['primary'] == true ? 1 : 0)
             .compareTo(a['primary'] == true ? 1 : 0));
-        for (final d in screens) {
+        for (final d in indexedScreens) {
           displays.add(DisplayInfo(
               d['id'] as int? ?? displays.length + 1,
               d['x'] as int,
               d['y'] as int,
               d['width'] as int,
-              d['height'] as int));
+              d['height'] as int,
+              screenshotIndex: d['_screenshotIndex'] as int));
         }
         if (displays.isNotEmpty) {
           final right = displays
@@ -192,7 +200,13 @@ class Agent {
 
   Future<Uint8List> screenshot(int monitor) async {
     if (!mock) {
-      return (await request('/screenshot')).bodyBytes;
+      return (await request('/screenshot', query: {
+        'monitor': '$monitor',
+        'format': 'jpeg',
+        'quality': '70',
+        'scale': '0.5',
+      }))
+          .bodyBytes;
     }
     final recorder = ui.PictureRecorder();
     final c = Canvas(recorder);

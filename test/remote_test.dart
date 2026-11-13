@@ -63,13 +63,19 @@ void main() {
     expect(state.error, isNull);
     expect(state.delay, 2000);
     await tester.pump(const Duration(milliseconds: 2000));
-    await tester.runAsync(() async {
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    });
-    await tester.pump();
-    expect(requests, 2);
+    // The successful frame schedules the next poll with a zero-delay timer.
+    // Frame decoding needs real time, which varies under load, so wait
+    // until the next request starts instead of assuming one decode window.
+    for (var i = 0; i < 10 && requests < 3; i++) {
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1));
+    }
+    expect(requests, 3);
     expect(state.failures, 0);
-    expect(state.delay, 1000);
+    expect(state.delay, 0);
     expect(state.error, isNull);
     expect(
         tester
@@ -77,12 +83,64 @@ void main() {
             .map((w) => w.painter)
             .whereType<RemoteFramePainter>(),
         isNotEmpty);
-    expect(find.text('Ảnh: 1.0/giây'), findsOneWidget);
+    expect(find.text('Ảnh: liên tục'), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 1000));
     expect(requests, 3);
     await tester.pumpWidget(const SizedBox());
     nextFrame.complete(http.Response('frame unavailable', 503));
     await tester.pump();
+  });
+
+  testWidgets('Monitor aspect changes height; full trackpad sweeps reach edges',
+      (tester) async {
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final moves = <Map<String, dynamic>>[];
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((request) async {
+          if (request.method == 'GET') return http.Response('no frame', 503);
+          moves.add(jsonDecode(request.body) as Map<String, dynamic>);
+          return http.Response('{}', 200);
+        }));
+    agent.displays = [
+      const DisplayInfo(1, 0, 0, 1920, 1080),
+      const DisplayInfo(2, 0, 0, 1200, 1200),
+    ];
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(
+        MaterialApp(home: RemotePage(agent: agent, pollMs: () => 1000)));
+    final remote = find.byKey(const ValueKey('remote-half'));
+    expect(tester.getSize(remote), const Size(800, 450));
+    final dynamic state = tester.state(find.byType(RemotePage));
+    final pad = find.byType(KeyboardSurface);
+    final bounds = tester.getRect(pad);
+    state.cursor = Offset.zero;
+    final horizontal =
+        await tester.startGesture(bounds.topLeft + const Offset(0.1, 20));
+    await horizontal.moveTo(Offset(bounds.right - 0.1, bounds.top + 20));
+    await horizontal.up();
+    await tester.pump();
+    expect(moves.last['x'], 1919);
+    expect(moves.last['y'], 0);
+    state.cursor = Offset.zero;
+    final vertical =
+        await tester.startGesture(bounds.topLeft + const Offset(20, 0.1));
+    await vertical.moveTo(Offset(bounds.left + 20, bounds.bottom - 0.1));
+    await vertical.up();
+    await tester.pump();
+    expect(moves.last['x'], 0);
+    expect(moves.last['y'], 1079);
+    await tester.tap(find.byTooltip('Điều khiển'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Màn hình 2'));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(remote), const Size(800, 800));
+    expect(tester.getSize(find.byKey(const ValueKey('keyboard-half'))),
+        const Size(800, 600));
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('KeyboardSurface: right click, movement, scroll, drag down/up',
@@ -152,8 +210,9 @@ void main() {
     await tester.pump();
     expect(requests.map((r) => r.url.path), ['/move']);
     final move = jsonDecode(requests.single.body);
-    expect(move['x'], 20);
-    expect(move['y'], 10);
+    final pad = tester.getSize(find.byType(KeyboardSurface));
+    expect(move['x'], (20 * 1920 / pad.width).round());
+    expect(move['y'], (10 * 1080 / pad.height).round());
     expect(move.containsKey('relative'), isFalse);
     requests.clear();
 
@@ -209,7 +268,8 @@ void main() {
     expect(screenshot.isCompleted, isFalse);
     expect(screenshotRequests, hasLength(1));
     expect(screenshotRequests.single.url.path, '/screenshot');
-    expect(screenshotRequests.single.url.hasQuery, isFalse);
+    expect(screenshotRequests.single.url.queryParameters,
+        {'monitor': '0', 'format': 'jpeg', 'quality': '70', 'scale': '0.5'});
     expect(commands, hasLength(2));
     expect(find.textContaining('Lệnh điều khiển bị gián đoạn'), findsOneWidget);
     await tester.tap(find.byTooltip('Điều khiển'));
@@ -236,13 +296,13 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
   testWidgets(
-      'Cover maps corners and center; trackpad scales moves and monitor crops',
+      'Width fit preserves the entire per-monitor frame and touch mapping',
       (tester) async {
     final png = (await tester.runAsync(() async {
       final recorder = ui.PictureRecorder();
       Canvas(recorder).drawColor(Colors.blue, BlendMode.src);
       final picture = recorder.endRecording();
-      final image = await picture.toImage(384, 108);
+      final image = await picture.toImage(192, 108);
       final png = (await image.toByteData(format: ui.ImageByteFormat.png))!
           .buffer
           .asUint8List();
@@ -250,6 +310,7 @@ void main() {
       picture.dispose();
       return png;
     }))!;
+    final screenshotUrls = <Uri>[];
     final moves = <Map<String, dynamic>>[];
     final moveRequests = <http.Request>[];
     final a = Agent(
@@ -265,24 +326,25 @@ void main() {
                   'cursorY': 200,
                   'screens': [
                     {
-                      'primary': true,
-                      'x': 0,
-                      'y': 0,
-                      'width': 1920,
-                      'height': 1080
-                    },
-                    {
                       'primary': false,
                       'x': -1920,
                       'y': 0,
                       'width': 1536,
                       'height': 864
                     },
+                    {
+                      'primary': true,
+                      'x': 0,
+                      'y': 0,
+                      'width': 1920,
+                      'height': 1080
+                    },
                   ],
                 }),
                 200);
           }
           if (request.url.path == '/screenshot') {
+            screenshotUrls.add(request.url);
             return http.Response.bytes(png, 200);
           }
           moveRequests.add(request);
@@ -291,28 +353,44 @@ void main() {
         }));
     addTearDown(a.dispose);
     await a.health();
+    bool hasFrame() => tester
+        .widgetList<CustomPaint>(find.byType(CustomPaint))
+        .map((w) => w.painter)
+        .whereType<RemoteFramePainter>()
+        .isNotEmpty;
+    Future<void> waitForFrame() async {
+      // Frame decoding needs real time, which varies under load; wait until
+      // a frame is shown instead of assuming one decode window is enough.
+      for (var i = 0; i < 10 && !hasFrame(); i++) {
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        });
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1));
+      }
+    }
+
     await tester.pumpWidget(
         MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
     await tester.pump();
-    await tester.runAsync(() async {
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    });
-    await tester.pump();
+    await waitForFrame();
     Rect crop() => tester
         .widgetList<CustomPaint>(find.byType(CustomPaint))
         .map((w) => w.painter)
         .whereType<RemoteFramePainter>()
         .single
         .source;
-    expect(crop(), const Rect.fromLTWH(192, 0, 192, 108));
-    // Cover fills 800x300 with a 800x450 display: 75 logical pixels
-    // (180 PC pixels) are clipped at both top and bottom.
+    expect(crop(), const Rect.fromLTWH(0, 0, 192, 108));
+    expect(screenshotUrls.first.queryParameters,
+        {'monitor': '1', 'format': 'jpeg', 'quality': '70', 'scale': '0.5'});
+    // The entire 16:9 display fits at 800x450 without cropping.
     final remote = find.byKey(const ValueKey('remote-half'));
+    expect(tester.getSize(remote), const Size(800, 450));
     for (final entry in <Offset, Offset>{
-      Offset.zero: const Offset(0, 180),
-      const Offset(400, 150): const Offset(960, 540),
-      const Offset(799, 299): const Offset(1918, 898),
-      const Offset(0, 299): const Offset(0, 898),
+      Offset.zero: const Offset(0, 0),
+      const Offset(400, 225): const Offset(960, 540),
+      const Offset(799, 449): const Offset(1918, 1078),
+      const Offset(0, 449): const Offset(0, 1078),
     }.entries) {
       await tester.tapAt(tester.getTopLeft(remote) + entry.key);
       await tester.pump();
@@ -320,16 +398,16 @@ void main() {
       expect(moves.last['x'], entry.value.dx);
       expect(moves.last['y'], entry.value.dy);
     }
-    // Tall view clips the left/right of the display instead.
+    // A narrow viewport still shows all four image edges.
     tester.view.physicalSize = const Size(400, 1200);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pump();
     for (final entry in <Offset, Offset>{
-      Offset.zero: const Offset(600, 0),
-      const Offset(200, 300): const Offset(960, 540),
-      const Offset(399, 599): const Offset(1318, 1078),
+      Offset.zero: const Offset(0, 0),
+      const Offset(200, 112.5): const Offset(960, 540),
+      const Offset(399, 224): const Offset(1915, 1075),
     }.entries) {
       await tester.tapAt(tester.getTopLeft(remote) + entry.key);
       await tester.pump();
@@ -351,23 +429,43 @@ void main() {
     expect(moveRequests, hasLength(1));
     expect(moveRequests.single.method, 'POST');
     expect(moveRequests.single.url.path, '/move');
-    expect(moves.last['x'], 148);
-    expect(moves.last['y'], 176);
+    final padSize = tester.getSize(find.byType(KeyboardSurface));
+    expect(moves.last['x'], (100 + 20 * 1920 / padSize.width).round());
+    expect(moves.last['y'], (200 - 10 * 1080 / padSize.height).round());
     expect(moves.last.containsKey('relative'), isFalse);
     await tester.tap(find.byTooltip('Điều khiển'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Màn hình 2'));
     await tester.pumpAndSettle();
+    // After the switch the new frame arrives one poll cycle later (the
+    // in-flight frame for the old monitor finishes first, then the
+    // zero-delay timer starts a poll for the new monitor, whose frame
+    // needs a real-time decode). Decode time varies under load, so wait
+    // until the new frame is shown instead of assuming a fixed number
+    // of decode windows.
+    for (var i = 0;
+        i < 10 &&
+            !(screenshotUrls.isNotEmpty &&
+                screenshotUrls.last.queryParameters['monitor'] == '0' &&
+                hasFrame());
+        i++) {
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1));
+    }
+    expect(screenshotUrls.last.queryParameters['monitor'], '0');
     expect(crop().left, 0);
     expect(crop().top, 0);
-    expect(crop().width, closeTo(153.6, 0.000001));
-    expect(crop().height, closeTo(86.4, 0.000001));
+    expect(crop().width, closeTo(192, 0.000001));
+    expect(crop().height, closeTo(108, 0.000001));
     tester
         .widget<KeyboardSurface>(find.byType(KeyboardSurface))
         .onMove(const Offset(-20, 10));
     await tester.pump();
-    expect(moves.last['x'], -1190);
-    expect(moves.last['y'], 451);
+    expect(moves.last['x'], (-1152 - 20 * 1536 / padSize.width).round());
+    expect(moves.last['y'], (432 + 10 * 864 / padSize.height).round());
     tester
         .widget<KeyboardSurface>(find.byType(KeyboardSurface))
         .onMove(const Offset(-10000, 10000));
@@ -381,7 +479,7 @@ void main() {
         .onMove(const Offset(2000, 100));
     await tester.pump();
     expect(moves.last['x'], 1919);
-    expect(moves.last['y'], 1055);
+    expect(moves.last['y'], 1079);
     expect(find.textContaining('Agent cần metadata'), findsNothing);
     expect(moveRequests.map((r) => r.url.path), everyElement('/move'));
     expect(moveRequests.map((r) => r.method), everyElement('POST'));
@@ -433,8 +531,9 @@ void main() {
         .widget<KeyboardSurface>(find.byType(KeyboardSurface))
         .onMove(const Offset(25, -15));
     await tester.pump();
-    expect(commands.single['x'], -1275);
-    expect(commands.single['y'], 235);
+    final pad = tester.getSize(find.byType(KeyboardSurface));
+    expect(commands.single['x'], (-1300 + 25 * 1536 / pad.width).round());
+    expect(commands.single['y'], (250 - 15 * 864 / pad.height).round());
     await tester.pumpWidget(const SizedBox());
   });
   testWidgets('Direct keys send text and modifier chords without text input',
@@ -561,7 +660,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('Win is rejected immediately and an armed Win blocks the chord',
+  testWidgets('Win arms one-shot chords and a second tap sends standalone Win',
       (tester) async {
     final requests = <http.Request>[];
     final a = Agent(
@@ -569,27 +668,32 @@ void main() {
         client: MockClient((request) async {
           if (request.method == 'GET') return http.Response('no frame', 503);
           requests.add(request);
-          return http.Response('{}', 200);
+          return http.Response('{"ok":true}', 200);
         }));
     addTearDown(a.dispose);
     await tester.pumpWidget(
         MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
     final dynamic state = tester.state(find.byType(RemotePage));
+    for (final letter in ['R', 'D', 'L']) {
+      await tester.tap(find.text('Win'));
+      await tester.pump();
+      expect(state.modifiers, contains('Win'));
+      await tester.tap(find.text(letter));
+      await tester.pump();
+      expect(requests.last.url.path, '/key');
+      expect(jsonDecode(requests.last.body)['keys'], 'Win+$letter');
+      expect(state.modifiers, isEmpty);
+    }
     await tester.tap(find.text('Win'));
     await tester.pump();
-    expect(state.modifiers, isEmpty);
-    expect(find.text('Phím Win chưa được agent hỗ trợ'), findsOneWidget);
-    expect(requests, isEmpty);
-    state.modifiers.addAll(['Ctrl', 'Win']);
-    await tester.tap(find.text('C'));
+    await tester.tap(find.text('Win'));
     await tester.pump();
-    expect(requests, isEmpty);
+    expect(jsonDecode(requests.last.body)['keys'], 'Win');
     expect(state.modifiers, isEmpty);
-    await state.send('/key', {'key': 'Win+R'});
-    expect(requests, isEmpty);
+    expect(find.text('Phím Win chưa được agent hỗ trợ'), findsNothing);
     await tester.tap(find.text('V'));
     await tester.pump();
-    expect(requests.single.url.path, '/type');
+    expect(requests.last.url.path, '/type');
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -640,7 +744,8 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('Remote has two equal halves and a complete floating menu',
+  testWidgets(
+      'Remote follows display aspect ratio with a complete floating menu',
       (tester) async {
     final a = Agent(baseUrl: defaultBaseUrl, mock: true);
     await a.health();
@@ -649,7 +754,7 @@ void main() {
         MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
     for (final size in [
       const Size(900, 1200),
-      const Size(1200, 600),
+      const Size(1200, 900),
       const Size(360, 480)
     ]) {
       tester.view.physicalSize = size;
@@ -657,14 +762,12 @@ void main() {
       await tester.pump();
       final remote = find.byKey(const ValueKey('remote-half'));
       final keyboard = find.byKey(const ValueKey('keyboard-half'));
-      expect(tester.getSize(remote), Size(size.width, size.height / 2));
-      expect(tester.getSize(keyboard), tester.getSize(remote));
+      final d = a.displays.first;
+      final height = size.width * d.height / d.width;
+      expect(tester.getSize(remote), Size(size.width, height));
+      expect(tester.getSize(keyboard), Size(size.width, size.height - height));
       expect(tester.getTopLeft(remote), Offset.zero);
-      expect(tester.getTopLeft(keyboard).dy, size.height / 2);
-      final body =
-          tester.widget<Scaffold>(find.byType(Scaffold)).body! as Column;
-      expect(body.children, hasLength(2));
-      expect(body.children.cast<Expanded>().map((w) => w.flex), [1, 1]);
+      expect(tester.getTopLeft(keyboard).dy, height);
       expect(find.byType(AppBar), findsNothing);
       expect(find.byType(TextField), findsNothing);
       expect(find.byType(SingleChildScrollView), findsNothing);
@@ -702,7 +805,68 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Q'), findsNothing);
     expect(tester.getSize(find.byKey(const ValueKey('keyboard-half'))).height,
-        600);
+        1200 - 900 * a.displays.first.height / a.displays.first.width);
+    await tester.pumpWidget(const SizedBox());
+  });
+  for (final action in ['sleep', 'restart', 'shutdown']) {
+    testWidgets('Power $action posts to /power after confirmation',
+        (tester) async {
+      final requests = <http.Request>[];
+      final a = Agent(
+          baseUrl: defaultBaseUrl,
+          client: MockClient((request) async {
+            if (request.method == 'GET') return http.Response('no frame', 503);
+            requests.add(request);
+            return http.Response('{"ok":true}', 200);
+          }));
+      addTearDown(a.dispose);
+      await tester.pumpWidget(
+          MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
+      final label = {
+        'sleep': 'Ngủ',
+        'restart': 'Khởi động lại',
+        'shutdown': 'Tắt máy'
+      }[action]!;
+      await tester.tap(find.byTooltip('Điều khiển'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text(label));
+      await tester.tap(find.text(label));
+      await tester.pumpAndSettle();
+      expect(requests, isEmpty);
+      await tester.tap(find.text('Xác nhận'));
+      await tester.pumpAndSettle();
+      if (action != 'sleep') {
+        expect(requests, isEmpty);
+        await tester.tap(find.text('Xác nhận'));
+        await tester.pumpAndSettle();
+      }
+      expect(requests.single.method, 'POST');
+      expect(requests.single.url.path, '/power');
+      expect(jsonDecode(requests.single.body)['action'], action);
+      expect(find.text('Đã gửi lệnh ${label.toLowerCase()}'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+  testWidgets('Power errors show agent error without success notice',
+      (tester) async {
+    final a = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((request) async {
+          if (request.method == 'GET') return http.Response('no frame', 503);
+          return http.Response('{"ok":false,"error":"power failed"}', 500);
+        }));
+    addTearDown(a.dispose);
+    await tester.pumpWidget(
+        MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
+    await tester.tap(find.byTooltip('Điều khiển'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Ngủ'));
+    await tester.tap(find.text('Ngủ'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Xác nhận'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('power failed'), findsOneWidget);
+    expect(find.text('Đã gửi lệnh ngủ'), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
   testWidgets('Shutdown requires two approvals; cancel sends nothing',

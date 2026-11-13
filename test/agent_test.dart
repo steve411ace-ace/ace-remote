@@ -43,6 +43,8 @@ void main() {
     expect(a.virtualSize, const Size(3840, 1080));
     expect(a.virtualOrigin, const Offset(-1920, 0));
     expect(a.displays.first.x, 0);
+    expect(a.displays.first.screenshotIndex, 1);
+    expect(a.displays.last.screenshotIndex, 0);
     expect(a.canSelect, isTrue);
     expect(a.cursor, const Offset(-1200, 320));
     expect(a.capabilities, contains('relative_move'));
@@ -140,7 +142,7 @@ void main() {
     a.dispose();
   });
   test(
-      'HTTP legacy health metadata, screenshot without query, JSON command and errors',
+      'HTTP legacy health metadata, JPEG screenshot query, JSON command and errors',
       () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final received = <String>[];
@@ -173,7 +175,7 @@ void main() {
     expect(clicks.single['button'], 'right');
     expect(clicks.single['x'], -1152);
     expect(await a.screenshot(2), [1, 2, 3]);
-    expect(received.last, 'GET /screenshot');
+    expect(received.last, 'GET /screenshot?monitor=2&format=jpeg&quality=70&scale=0.5');
     await expectLater(a.command('/key', {'key': 'Win+L'}),
         throwsA(predicate((e) => e.toString().contains('Hết phiên'))));
     a.dispose();

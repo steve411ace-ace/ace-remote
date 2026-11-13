@@ -41,8 +41,8 @@ jobs:
           path: build/app/outputs/flutter-apk/app-release.apk
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.3.0
-          name: "Ace Remote v1.3.0"
+          tag_name: v1.4.0
+          name: "Ace Remote v1.4.0"
           files: build/app/outputs/flutter-apk/app-release.apk
       - name: Upload to Firebase App Distribution
         uses: wzieba/firebase-distribution-github-action@v1

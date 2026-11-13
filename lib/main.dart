@@ -570,7 +570,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Agent get agent => widget.agent;
   ui.Image? frame;
   double fitScale = 1;
-  double pointerScale = 1;
   String? pressedLabel;
   String? failedPath;
   Map<String, dynamic>? failedData;
@@ -642,15 +641,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       return;
     }
     polling = true;
-    final watch = Stopwatch()..start();
+    final requestedMonitor = monitor;
     try {
-      final bytes = await agent.screenshot(monitor);
+      final bytes = await agent.screenshot(display?.screenshotIndex ?? 0);
       final codec = await ui.instantiateImageCodec(bytes);
       final decoded = await codec.getNextFrame();
       final size =
           Size(decoded.image.width.toDouble(), decoded.image.height.toDouble());
       codec.dispose();
-      if (mounted) {
+      if (mounted && running && requestedMonitor == monitor) {
         setState(() {
           frame?.dispose();
           frame = decoded.image;
@@ -664,12 +663,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       failures++;
     } finally {
       polling = false;
-      delay = max(
-          widget.pollMs(),
-          min(
-              8000,
-              max(watch.elapsedMilliseconds,
-                  widget.pollMs() * (1 << min(failures, 4)))));
+      delay = failures == 0
+          ? 0
+          : min(8000, widget.pollMs() * (1 << min(failures, 4)));
       if (mounted && running) {
         timer = Timer(Duration(milliseconds: delay), poll);
       }
@@ -677,13 +673,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   }
 
   Future<void> send(String path, Map<String, dynamic> data) {
-    if (path == '/key' &&
-        ((data['key'] as String?)?.split('+').contains('Win') == true ||
-            (data['keys'] as String?)?.contains('{Win}') == true)) {
-      setState(() => modifiers.clear());
-      notice('Phím Win chưa được agent hỗ trợ');
-      return Future.value();
-    }
     if (!controlsHealthy) {
       return Future.value();
     }
@@ -702,7 +691,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
           ...data,
           if (path == '/key' && data['key'] is String)
             'keys': sendKeysChord(data['key'] as String),
-          'monitor': targetMonitor,
+          if (path != '/power') 'monitor': targetMonitor,
         });
       } catch (e) {
         if (mounted) {
@@ -802,23 +791,16 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       }
       if (!mounted ||
           !await confirm('Xác nhận lần 2',
-              'Hãy lưu công việc trên PC. Cần agent hỗ trợ /power để thực hiện. Tiếp tục $label?')) {
+              'Hãy lưu công việc trên PC. Tiếp tục $label?')) {
         return;
       }
     } else if (!await confirm(
         label, 'Máy ngủ sẽ không gọi dậy được từ app v1. Tiếp tục?')) {
       return;
     }
-    if (agent.capabilities.contains('power')) {
-      await send('/power', {'action': action});
-    } else if (action == 'sleep') {
-      await send('/key', {'key': 'Sleep'});
-    } else {
-      notice('Phím Win chưa được agent hỗ trợ');
-      return;
-    }
+    await send('/power', {'action': action});
     if (controlsHealthy) {
-      notice('Đã gửi yêu cầu $label. Chưa xác minh Windows đã thực thi.');
+      notice('Đã gửi lệnh ${label.toLowerCase()}');
     }
   }
 
@@ -839,14 +821,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
           return const Center(child: Text('Đang lấy ảnh…'));
         }
         final d = display;
-        final source =
-            d?.cropRect(agent.virtualOrigin, agent.virtualSize, imageSize) ??
-                (Offset.zero & imageSize);
-        final cover = applyBoxFit(BoxFit.cover, source.size, box.biggest);
-        final scale = cover.destination.width / cover.source.width;
+        final source = Offset.zero & imageSize;
+        final scale = box.maxWidth / source.width;
         fitScale = scale;
-        pointerScale =
-            (d?.width ?? agent.virtualSize.width) / (source.width * scale);
         final fitted = Size(source.width * scale, source.height * scale);
         return ClipRect(
             child: OverflowBox(
@@ -882,42 +859,51 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         ));
       });
 
-  Widget trackpad({bool translucent = false, Widget? child}) => KeyboardSurface(
-        keyAt: child == null ? null : keyAt,
-        onMove: (delta) =>
-            move(delta * pointerScale / transform.value.getMaxScaleOnAxis()),
-        onPressed: child == null
-            ? null
-            : (position) {
-                String? label;
-                if (position != null) {
-                  for (final entry in keyLabels.entries) {
-                    final box = entry.key.currentContext?.findRenderObject();
-                    if (box is RenderBox &&
-                        box.hasSize &&
-                        (box.localToGlobal(Offset.zero) & box.size)
-                            .contains(position)) {
-                      label = entry.value;
-                      break;
+  Widget trackpad({bool translucent = false, Widget? child}) => LayoutBuilder(
+      builder: (context, box) => KeyboardSurface(
+            keyAt: child == null ? null : keyAt,
+            onMove: (delta) {
+              final d = display;
+              final size = d == null
+                  ? agent.virtualSize
+                  : Size(d.width.toDouble(), d.height.toDouble());
+              move(Offset(delta.dx * size.width / box.maxWidth,
+                  delta.dy * size.height / box.maxHeight));
+            },
+            onPressed: child == null
+                ? null
+                : (position) {
+                    String? label;
+                    if (position != null) {
+                      for (final entry in keyLabels.entries) {
+                        final box =
+                            entry.key.currentContext?.findRenderObject();
+                        if (box is RenderBox &&
+                            box.hasSize &&
+                            (box.localToGlobal(Offset.zero) & box.size)
+                                .contains(position)) {
+                          label = entry.value;
+                          break;
+                        }
+                      }
                     }
-                  }
+                    if (mounted) setState(() => pressedLabel = label);
+                  },
+            onClick: click,
+            onScroll: (dy) => send('/scroll', {'delta': (-dy * 3).round()}),
+            onDrag: (down) {
+              if (!agent.capabilities.contains('mouse_drag')) {
+                if (down) {
+                  notice('Agent không có mouse_drag (down/up).');
                 }
-                if (mounted) setState(() => pressedLabel = label);
-              },
-        onClick: click,
-        onScroll: (dy) => send('/scroll', {'delta': (-dy * 3).round()}),
-        onDrag: (down) {
-          if (!agent.capabilities.contains('mouse_drag')) {
-            if (down) {
-              notice('Agent không có mouse_drag (down/up).');
-            }
-            return;
-          }
-          dragging = down;
-          send('/click', {'button': 'left', 'action': down ? 'down' : 'up'});
-        },
-        child: child,
-      );
+                return;
+              }
+              dragging = down;
+              send(
+                  '/click', {'button': 'left', 'action': down ? 'down' : 'up'});
+            },
+            child: child,
+          ));
   final keyLabels = <GlobalKey, String>{};
   final keyTargets = <GlobalKey, VoidCallback>{};
 
@@ -937,17 +923,16 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       {double units = 1, String? command, bool modifier = false}) {
     final selected = modifier && modifiers.contains(command ?? label);
     void press() {
-      if (modifiers.contains('Win') && !modifier) {
-        setState(() => modifiers.clear());
-        notice('Phím Win chưa được agent hỗ trợ');
-        return;
-      }
       if (label == 'Click trái' || label == 'Click phải') {
         setState(() => modifiers.clear());
         click(label == 'Click trái' ? 'left' : 'right');
       } else if (modifier && label == 'Win') {
-        setState(() => modifiers.remove('Win'));
-        notice('Phím Win chưa được agent hỗ trợ');
+        if (modifiers.contains('Win')) {
+          setState(() => modifiers.remove('Win'));
+          key('Win');
+        } else {
+          setState(() => modifiers.add('Win'));
+        }
       } else if (modifier) {
         setState(() {
           modifiers.contains(command ?? label)
@@ -1076,9 +1061,13 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       releaseDrag();
       setState(() {
         monitor = id;
+        frame?.dispose();
+        frame = null;
         transform.value = Matrix4.identity();
         cursor = Offset(d.x + d.width / 2, d.y + d.height / 2);
       });
+      timer?.cancel();
+      poll();
     } else if (action == 'fit') {
       transform.value = Matrix4.identity();
     } else if (action == 'actual') {
@@ -1126,78 +1115,98 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-        body: Column(children: [
-          Expanded(
-              flex: 1,
-              child: Stack(key: const ValueKey('remote-half'), children: [
-                Positioned.fill(child: screenshot()),
-                Positioned(
-                    top: 0,
-                    right: 0,
-                    child: SafeArea(
-                        bottom: false,
-                        child: PopupMenuButton<String>(
-                          tooltip: 'Điều khiển',
-                          icon:
-                              const Icon(Icons.more_vert, color: Colors.white),
-                          color: Theme.of(context).colorScheme.surface,
-                          onSelected: menuAction,
-                          itemBuilder: (_) => [
-                            for (final d in agent.displays)
-                              CheckedPopupMenuItem(
-                                  value: 'monitor:${d.id}',
-                                  checked: d.id == monitor,
-                                  child: Text('Màn hình ${d.id}')),
-                            const PopupMenuItem(
-                                value: 'fit', child: Text('Vừa màn hình')),
-                            const PopupMenuItem(
-                                value: 'actual', child: Text('1:1')),
-                            PopupMenuItem(
-                                value: 'relative',
-                                child: Text(relative
-                                    ? 'Trackpad tương đối'
-                                    : 'Chạm tuyệt đối')),
-                            CheckedPopupMenuItem(
-                                value: 'overlay',
-                                checked: overlay,
-                                child: const Text('Bật/tắt lớp trackpad')),
-                            CheckedPopupMenuItem(
-                                value: 'keyboard',
-                                checked: keyboard,
-                                child: const Text('Bật/tắt bàn phím')),
-                            const PopupMenuItem(
-                                value: 'sleep', child: Text('Ngủ')),
-                            const PopupMenuItem(
-                                value: 'restart', child: Text('Khởi động lại')),
-                            const PopupMenuItem(
-                                value: 'shutdown', child: Text('Tắt máy')),
-                            const PopupMenuItem(
-                                value: 'settings', child: Text('Cài đặt')),
-                            const PopupMenuItem(
-                                value: 'disconnect',
-                                child: Text('Ngắt kết nối')),
-                            if (agent.mock)
-                              const PopupMenuItem(
-                                  value: 'log', child: Text('Nhật ký mock')),
-                          ],
-                        ))),
-                Positioned(
-                    bottom: 4,
-                    right: 6,
-                    child: IgnorePointer(
-                        child: Text(
-                            'Ảnh: ${(1000 / delay).toStringAsFixed(1)}/giây',
-                            style: const TextStyle(
-                                fontSize: 10, color: Colors.white54)))),
-              ])),
-          Expanded(
-              flex: 1,
-              child: SizedBox(
-                  key: const ValueKey('keyboard-half'),
-                  child: keyboard
-                      ? laptopDeck(keyboardPanel())
-                      : const SizedBox.expand())),
-        ]),
+        body: LayoutBuilder(builder: (context, box) {
+          final d = display;
+          final size = d == null
+              ? agent.virtualSize
+              : Size(d.width.toDouble(), d.height.toDouble());
+          final imageHeight = box.maxWidth * size.height / size.width;
+          final content = SizedBox(
+              height: max(box.maxHeight, imageHeight + 80),
+              child: Column(children: [
+                SizedBox(
+                    height: imageHeight,
+                    child: Stack(key: const ValueKey('remote-half'), children: [
+                      Positioned.fill(child: screenshot()),
+                      Positioned(
+                          top: 0,
+                          right: 0,
+                          child: SafeArea(
+                              bottom: false,
+                              child: PopupMenuButton<String>(
+                                tooltip: 'Điều khiển',
+                                icon: const Icon(Icons.more_vert,
+                                    color: Colors.white),
+                                color: Theme.of(context).colorScheme.surface,
+                                onSelected: menuAction,
+                                itemBuilder: (_) => [
+                                  for (final d in agent.displays)
+                                    CheckedPopupMenuItem(
+                                        value: 'monitor:${d.id}',
+                                        checked: d.id == monitor,
+                                        child: Text('Màn hình ${d.id}')),
+                                  const PopupMenuItem(
+                                      value: 'fit',
+                                      child: Text('Vừa màn hình')),
+                                  const PopupMenuItem(
+                                      value: 'actual', child: Text('1:1')),
+                                  PopupMenuItem(
+                                      value: 'relative',
+                                      child: Text(relative
+                                          ? 'Trackpad tương đối'
+                                          : 'Chạm tuyệt đối')),
+                                  CheckedPopupMenuItem(
+                                      value: 'overlay',
+                                      checked: overlay,
+                                      child:
+                                          const Text('Bật/tắt lớp trackpad')),
+                                  CheckedPopupMenuItem(
+                                      value: 'keyboard',
+                                      checked: keyboard,
+                                      child: const Text('Bật/tắt bàn phím')),
+                                  const PopupMenuItem(
+                                      value: 'sleep', child: Text('Ngủ')),
+                                  const PopupMenuItem(
+                                      value: 'restart',
+                                      child: Text('Khởi động lại')),
+                                  const PopupMenuItem(
+                                      value: 'shutdown',
+                                      child: Text('Tắt máy')),
+                                  const PopupMenuItem(
+                                      value: 'settings',
+                                      child: Text('Cài đặt')),
+                                  const PopupMenuItem(
+                                      value: 'disconnect',
+                                      child: Text('Ngắt kết nối')),
+                                  if (agent.mock)
+                                    const PopupMenuItem(
+                                        value: 'log',
+                                        child: Text('Nhật ký mock')),
+                                ],
+                              ))),
+                      Positioned(
+                          bottom: 4,
+                          right: 6,
+                          child: IgnorePointer(
+                              child: Text(
+                                  delay == 0
+                                      ? 'Ảnh: liên tục'
+                                      : 'Đang thử lại ảnh…',
+                                  style: const TextStyle(
+                                      fontSize: 10, color: Colors.white54)))),
+                    ])),
+                Expanded(
+                    flex: 1,
+                    child: SizedBox(
+                        key: const ValueKey('keyboard-half'),
+                        child: keyboard
+                            ? laptopDeck(keyboardPanel())
+                            : const SizedBox.expand())),
+              ]));
+          return imageHeight + 80 > box.maxHeight
+              ? SingleChildScrollView(child: content)
+              : content;
+        }),
       );
 }
 
