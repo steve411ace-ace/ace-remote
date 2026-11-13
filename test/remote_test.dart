@@ -136,7 +136,7 @@ void main() {
     addTearDown(agent.dispose);
     await tester.pumpWidget(
         MaterialApp(home: RemotePage(agent: agent, pollMs: () => 1000)));
-    final q = tester.getCenter(find.text('q'));
+    final q = tester.getCenter(find.text('Q'));
     final tap = await tester.startGesture(q);
     await tap.moveBy(const Offset(4, 2));
     await tap.up();
@@ -203,7 +203,7 @@ void main() {
     addTearDown(a.dispose);
     await tester.pumpWidget(
         MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
-    await tester.tap(find.text('Click Phải'));
+    await tester.tap(find.text('Click phải'));
     await tester.pump();
     await tester.pump();
     expect(screenshot.isCompleted, isFalse);
@@ -230,12 +230,13 @@ void main() {
     await tester.pump();
     expect(stateMonitor(tester), 2);
     expect(find.textContaining('Lệnh điều khiển bị gián đoạn'), findsNothing);
-    await tester.tap(find.text('Click Phải'));
+    await tester.tap(find.text('Click phải'));
     await tester.pump();
     expect(commands.last['monitor'], 2);
     await tester.pumpWidget(const SizedBox());
   });
-  testWidgets('Real health cursor drives absolute moves; tabs change crop',
+  testWidgets(
+      'Cover maps corners and center; trackpad scales moves and monitor crops',
       (tester) async {
     final png = (await tester.runAsync(() async {
       final recorder = ui.PictureRecorder();
@@ -304,6 +305,45 @@ void main() {
         .single
         .source;
     expect(crop(), const Rect.fromLTWH(192, 0, 192, 108));
+    // Cover fills 800x300 with a 800x450 display: 75 logical pixels
+    // (180 PC pixels) are clipped at both top and bottom.
+    final remote = find.byKey(const ValueKey('remote-half'));
+    for (final entry in <Offset, Offset>{
+      Offset.zero: const Offset(0, 180),
+      const Offset(400, 150): const Offset(960, 540),
+      const Offset(799, 299): const Offset(1918, 898),
+      const Offset(0, 299): const Offset(0, 898),
+    }.entries) {
+      await tester.tapAt(tester.getTopLeft(remote) + entry.key);
+      await tester.pump();
+      expect(moveRequests.last.url.path, '/click');
+      expect(moves.last['x'], entry.value.dx);
+      expect(moves.last['y'], entry.value.dy);
+    }
+    // Tall view clips the left/right of the display instead.
+    tester.view.physicalSize = const Size(400, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pump();
+    for (final entry in <Offset, Offset>{
+      Offset.zero: const Offset(600, 0),
+      const Offset(200, 300): const Offset(960, 540),
+      const Offset(399, 599): const Offset(1318, 1078),
+    }.entries) {
+      await tester.tapAt(tester.getTopLeft(remote) + entry.key);
+      await tester.pump();
+      expect(moves.last['x'], entry.value.dx);
+      expect(moves.last['y'], entry.value.dy);
+    }
+    tester.view.resetPhysicalSize();
+    tester.view.resetDevicePixelRatio();
+    await tester.pump();
+    final dynamic state = tester.state(find.byType(RemotePage));
+    state.cursor = const Offset(100, 200);
+    moveRequests.clear();
+    moves.clear();
+
     tester
         .widget<KeyboardSurface>(find.byType(KeyboardSurface))
         .onMove(const Offset(20, -10));
@@ -311,8 +351,8 @@ void main() {
     expect(moveRequests, hasLength(1));
     expect(moveRequests.single.method, 'POST');
     expect(moveRequests.single.url.path, '/move');
-    expect(moves.last['x'], 120);
-    expect(moves.last['y'], 190);
+    expect(moves.last['x'], 148);
+    expect(moves.last['y'], 176);
     expect(moves.last.containsKey('relative'), isFalse);
     await tester.tap(find.byTooltip('Điều khiển'));
     await tester.pumpAndSettle();
@@ -326,8 +366,8 @@ void main() {
         .widget<KeyboardSurface>(find.byType(KeyboardSurface))
         .onMove(const Offset(-20, 10));
     await tester.pump();
-    expect(moves.last['x'], -1172);
-    expect(moves.last['y'], 442);
+    expect(moves.last['x'], -1190);
+    expect(moves.last['y'], 451);
     tester
         .widget<KeyboardSurface>(find.byType(KeyboardSurface))
         .onMove(const Offset(-10000, 10000));
@@ -340,8 +380,8 @@ void main() {
         .widget<KeyboardSurface>(find.byType(KeyboardSurface))
         .onMove(const Offset(2000, 100));
     await tester.pump();
-    expect(moves.last['x'], 80);
-    expect(moves.last['y'], 963);
+    expect(moves.last['x'], 1919);
+    expect(moves.last['y'], 1055);
     expect(find.textContaining('Agent cần metadata'), findsNothing);
     expect(moveRequests.map((r) => r.url.path), everyElement('/move'));
     expect(moveRequests.map((r) => r.method), everyElement('POST'));
@@ -413,15 +453,190 @@ void main() {
     expect(find.byType(TextField), findsNothing);
     expect(find.text('Dán'), findsNothing);
     expect(find.text('Dán trên PC'), findsNothing);
-    await tester.tap(find.text('q'));
+    await tester.tap(find.text('Q'));
     await tester.pump();
     expect(requests.single.url.path, '/type');
     expect(jsonDecode(requests.single.body)['text'], 'q');
     await tester.tap(find.text('Ctrl').first);
-    await tester.tap(find.text('c'));
+    await tester.tap(find.text('C'));
     await tester.pump();
     expect(requests.last.url.path, '/key');
     expect(jsonDecode(requests.last.body)['keys'], '^c');
+    final dynamic state = tester.state(find.byType(RemotePage));
+    expect(state.modifiers, isEmpty);
+    await tester.tap(find.text('V'));
+    await tester.pump();
+    expect(requests.last.url.path, '/type');
+    expect(jsonDecode(requests.last.body)['text'], 'v');
+    await tester.tap(find.text('Ctrl').first);
+    await tester.pump();
+    await tester.tap(find.text('Ctrl').first);
+    await tester.pump();
+    expect(state.modifiers, isEmpty);
+    await tester.tap(find.text('Ctrl').first);
+    await tester.pump();
+    await tester.tap(find.text('Alt').first);
+    await tester.pump();
+    await tester.tap(find.text('Del'));
+    await tester.pump();
+    expect(jsonDecode(requests.last.body)['keys'], '^%{DEL}');
+    expect(state.modifiers, isEmpty);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Laptop rows and mouse buttons send the expected commands',
+      (tester) async {
+    final requests = <http.Request>[];
+    final a = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((request) async {
+          if (request.method == 'GET') return http.Response('no frame', 503);
+          requests.add(request);
+          return http.Response('{}', 200);
+        }));
+    addTearDown(a.dispose);
+    await tester.pumpWidget(
+        MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
+    final rows = [
+      ['Esc', for (var i = 1; i <= 12; i++) 'F$i', 'Del'],
+      [...'`1234567890-='.split(''), 'Backspace'],
+      ['Tab', ...'QWERTYUIOP[]'.split(''), r'\'],
+      ['Caps', ..."ASDFGHJKL;'".split(''), 'Enter'],
+      ['Shift', ...'ZXCVBNM,./'.split(''), 'Shift'],
+      ['Ctrl', 'Win', 'Alt', 'Space', 'Alt', 'Ctrl', '←', '↑', '↓', '→'],
+      ['Click trái', 'Click phải'],
+    ];
+    for (var i = 0; i < rows.length; i++) {
+      expect(
+          tester
+              .widgetList<Text>(find.descendant(
+                  of: find.byKey(ValueKey('keyboard-row-$i')),
+                  matching: find.byType(Text)))
+              .map((w) => w.data)
+              .toList(),
+          rows[i]);
+    }
+    final dynamic state = tester.state(find.byType(RemotePage));
+    state.cursor = const Offset(123, 234);
+    for (final button in ['left', 'right']) {
+      await tester
+          .tap(find.text(button == 'left' ? 'Click trái' : 'Click phải'));
+      await tester.pump();
+      expect(requests.last.url.path, '/click');
+      expect(jsonDecode(requests.last.body), {
+        'button': button,
+        'x': 123,
+        'y': 234,
+        'monitor': 1,
+      });
+    }
+    for (final label in ['F1', 'F12', 'Backspace', 'Enter', 'Del']) {
+      await tester.tap(find.text(label));
+      await tester.pump();
+      expect(requests.last.url.path, '/key');
+      expect(
+          jsonDecode(requests.last.body)['keys'],
+          {
+            'F1': '{F1}',
+            'F12': '{F12}',
+            'Backspace': '{BACKSPACE}',
+            'Enter': '{ENTER}',
+            'Del': '{DEL}',
+          }[label]);
+    }
+    for (final label in ['Caps', 'Shift']) {
+      final count = requests.length;
+      await tester.tap(find.text(label).first);
+      await tester.pump();
+      expect(requests.length, count);
+      await tester.tap(find.text('C'));
+      await tester.pump();
+      expect(jsonDecode(requests.last.body)['keys'], '+c');
+      expect(state.modifiers, isEmpty);
+      await tester.tap(find.text('C'));
+      await tester.pump();
+      expect(requests.last.url.path, '/type');
+      expect(jsonDecode(requests.last.body)['text'], 'c');
+    }
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Win is rejected immediately and an armed Win blocks the chord',
+      (tester) async {
+    final requests = <http.Request>[];
+    final a = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((request) async {
+          if (request.method == 'GET') return http.Response('no frame', 503);
+          requests.add(request);
+          return http.Response('{}', 200);
+        }));
+    addTearDown(a.dispose);
+    await tester.pumpWidget(
+        MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
+    final dynamic state = tester.state(find.byType(RemotePage));
+    await tester.tap(find.text('Win'));
+    await tester.pump();
+    expect(state.modifiers, isEmpty);
+    expect(find.text('Phím Win chưa được agent hỗ trợ'), findsOneWidget);
+    expect(requests, isEmpty);
+    state.modifiers.addAll(['Ctrl', 'Win']);
+    await tester.tap(find.text('C'));
+    await tester.pump();
+    expect(requests, isEmpty);
+    expect(state.modifiers, isEmpty);
+    await state.send('/key', {'key': 'Win+R'});
+    expect(requests, isEmpty);
+    await tester.tap(find.text('V'));
+    await tester.pump();
+    expect(requests.single.url.path, '/type');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'All key kinds highlight on down and reset on up, cancel and drag',
+      (tester) async {
+    final a = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(a.dispose);
+    await tester.pumpWidget(
+        MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
+    Color? color(String label) => (tester
+            .widget<Container>(find
+                .ancestor(
+                    of: find.text(label).first,
+                    matching: find.byType(Container))
+                .first)
+            .decoration as BoxDecoration)
+        .color;
+    for (final label in [
+      'Q',
+      'Ctrl',
+      'Win',
+      'Click trái',
+      'Click phải',
+      'Del'
+    ]) {
+      final before = color(label);
+      final gesture =
+          await tester.startGesture(tester.getCenter(find.text(label).first));
+      await tester.pump();
+      expect(color(label), const Color(0xff8b929e));
+      await gesture.cancel();
+      await tester.pump();
+      expect(color(label), before);
+      final tap =
+          await tester.startGesture(tester.getCenter(find.text(label).first));
+      await tester.pump();
+      await tap.up();
+      await tester.pump();
+      expect(color(label), isNot(const Color(0xff8b929e)));
+    }
+    final drag = await tester.startGesture(tester.getCenter(find.text('Q')));
+    await tester.pump();
+    await drag.moveBy(const Offset(30, 0));
+    await tester.pump();
+    expect(color('Q'), const Color(0xff292b30));
+    await drag.up();
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -485,7 +700,7 @@ void main() {
     expect(find.text('Trackpad tương đối'), findsOneWidget);
     await tester.tap(find.text('Bật/tắt bàn phím'));
     await tester.pumpAndSettle();
-    expect(find.text('q'), findsNothing);
+    expect(find.text('Q'), findsNothing);
     expect(tester.getSize(find.byKey(const ValueKey('keyboard-half'))).height,
         600);
     await tester.pumpWidget(const SizedBox());

@@ -47,6 +47,8 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    unawaited(
+        SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
     lastActivity = widget.now();
     WidgetsBinding.instance.addObserver(this);
     agent = Agent(baseUrl: defaultBaseUrl, mock: mockMode);
@@ -107,6 +109,10 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(
+          SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
+    }
     if (state == AppLifecycleState.resumed &&
         widget.now().difference(lastActivity) >= const Duration(minutes: 5)) {
       lock();
@@ -216,6 +222,7 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     idle?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     agent.dispose();
@@ -563,6 +570,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Agent get agent => widget.agent;
   ui.Image? frame;
   double fitScale = 1;
+  double pointerScale = 1;
+  String? pressedLabel;
   String? failedPath;
   Map<String, dynamic>? failedData;
   Size imageSize = const Size(1, 1);
@@ -668,6 +677,13 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   }
 
   Future<void> send(String path, Map<String, dynamic> data) {
+    if (path == '/key' &&
+        ((data['key'] as String?)?.split('+').contains('Win') == true ||
+            (data['keys'] as String?)?.contains('{Win}') == true)) {
+      setState(() => modifiers.clear());
+      notice('Phím Win chưa được agent hỗ trợ');
+      return Future.value();
+    }
     if (!controlsHealthy) {
       return Future.value();
     }
@@ -786,7 +802,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       }
       if (!mounted ||
           !await confirm('Xác nhận lần 2',
-              'Hãy lưu công việc trên PC. Nếu agent chưa có /power, app sẽ mở Win+R, gõ lệnh shutdown rồi Enter (phụ thuộc focus Windows). Tiếp tục $label?')) {
+              'Hãy lưu công việc trên PC. Cần agent hỗ trợ /power để thực hiện. Tiếp tục $label?')) {
         return;
       }
     } else if (!await confirm(
@@ -798,15 +814,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     } else if (action == 'sleep') {
       await send('/key', {'key': 'Sleep'});
     } else {
-      // Legacy fallback: use Windows Run. Success of HTTP is not OS execution proof.
-      await send('/key', {'key': 'Win+R'});
-      await Future<void>.delayed(const Duration(milliseconds: 650));
-      if (!mounted || !running || !controlsHealthy) {
-        return;
-      }
-      await typeText(
-          action == 'shutdown' ? 'shutdown /s /t 0' : 'shutdown /r /t 0');
-      await send('/key', {'key': 'Enter'});
+      notice('Phím Win chưa được agent hỗ trợ');
+      return;
     }
     if (controlsHealthy) {
       notice('Đã gửi yêu cầu $label. Chưa xác minh Windows đã thực thi.');
@@ -833,9 +842,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         final source =
             d?.cropRect(agent.virtualOrigin, agent.virtualSize, imageSize) ??
                 (Offset.zero & imageSize);
-        final scale =
-            min(box.maxWidth / source.width, box.maxHeight / source.height);
+        final cover = applyBoxFit(BoxFit.cover, source.size, box.biggest);
+        final scale = cover.destination.width / cover.source.width;
         fitScale = scale;
+        pointerScale =
+            (d?.width ?? agent.virtualSize.width) / (source.width * scale);
         final fitted = Size(source.width * scale, source.height * scale);
         return ClipRect(
             child: OverflowBox(
@@ -873,7 +884,26 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   Widget trackpad({bool translucent = false, Widget? child}) => KeyboardSurface(
         keyAt: child == null ? null : keyAt,
-        onMove: move,
+        onMove: (delta) =>
+            move(delta * pointerScale / transform.value.getMaxScaleOnAxis()),
+        onPressed: child == null
+            ? null
+            : (position) {
+                String? label;
+                if (position != null) {
+                  for (final entry in keyLabels.entries) {
+                    final box = entry.key.currentContext?.findRenderObject();
+                    if (box is RenderBox &&
+                        box.hasSize &&
+                        (box.localToGlobal(Offset.zero) & box.size)
+                            .contains(position)) {
+                      label = entry.value;
+                      break;
+                    }
+                  }
+                }
+                if (mounted) setState(() => pressedLabel = label);
+              },
         onClick: click,
         onScroll: (dy) => send('/scroll', {'delta': (-dy * 3).round()}),
         onDrag: (down) {
@@ -888,6 +918,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         },
         child: child,
       );
+  final keyLabels = <GlobalKey, String>{};
   final keyTargets = <GlobalKey, VoidCallback>{};
 
   VoidCallback? keyAt(Offset position) {
@@ -906,18 +937,27 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       {double units = 1, String? command, bool modifier = false}) {
     final selected = modifier && modifiers.contains(command ?? label);
     void press() {
-      if (label == 'Click Phải') {
-        click('right');
+      if (modifiers.contains('Win') && !modifier) {
+        setState(() => modifiers.clear());
+        notice('Phím Win chưa được agent hỗ trợ');
+        return;
+      }
+      if (label == 'Click trái' || label == 'Click phải') {
+        setState(() => modifiers.clear());
+        click(label == 'Click trái' ? 'left' : 'right');
+      } else if (modifier && label == 'Win') {
+        setState(() => modifiers.remove('Win'));
+        notice('Phím Win chưa được agent hỗ trợ');
       } else if (modifier) {
         setState(() {
-          selected
+          modifiers.contains(command ?? label)
               ? modifiers.remove(command ?? label)
               : modifiers.add(command ?? label);
         });
       } else if (command != null) {
         key(command);
       } else if (modifiers.isEmpty) {
-        typeText(label);
+        typeText(label.toLowerCase());
       } else {
         key(label.toUpperCase());
       }
@@ -925,6 +965,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
     final target = GlobalKey();
     keyTargets[target] = press;
+    keyLabels[target] = label;
     return Expanded(
         flex: (units * 100).round(),
         child: Padding(
@@ -937,9 +978,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                 child: Container(
                     key: target,
                     decoration: BoxDecoration(
-                        color: selected
-                            ? const Color(0xff505762)
-                            : const Color(0xff292b30),
+                        color: pressedLabel == label
+                            ? const Color(0xff8b929e)
+                            : selected
+                                ? const Color(0xff505762)
+                                : const Color(0xff292b30),
                         borderRadius: BorderRadius.circular(4),
                         border: Border.all(color: const Color(0xff3c3e43))),
                     child: Center(
@@ -947,84 +990,68 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                             padding: const EdgeInsets.symmetric(horizontal: 2),
                             child: FittedBox(
                                 fit: BoxFit.scaleDown,
-                                child: label == 'Win'
-                                    ? IgnorePointer(
-                                        child: FilterChip(
-                                            label: const Text('Win'),
-                                            selected: selected,
-                                            onSelected: (_) => press()))
-                                    : Text(label,
-                                        style: const TextStyle(
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w500,
-                                            color: Colors.white)))))))));
+                                child: Text(label,
+                                    style: const TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w500,
+                                        color: Colors.white)))))))));
   }
 
   Widget keyboardPanel() => LayoutBuilder(builder: (context, box) {
-        // Every key fits inside the keyboard half, including short windows.
         keyTargets.clear();
-        final height = box.maxHeight;
-        return SizedBox(
-            height: height,
-            child: Padding(
-                padding: const EdgeInsets.all(4),
+        keyLabels.clear();
+        Widget row(int index, List<Widget> keys, {int flex = 1}) => Expanded(
+            flex: flex,
+            child: Row(key: ValueKey('keyboard-row-$index'), children: keys));
+        return Padding(
+            padding: const EdgeInsets.all(4),
+            child: trackpad(
                 child: Column(children: [
-                  Expanded(
-                      child: trackpad(
-                          child: Column(children: [
-                    Expanded(
-                        child: Row(children: [
-                      laptopKey('esc', command: 'Esc'),
-                      laptopKey('tab', units: 1.5, command: 'Tab'),
-                      laptopKey('Ctrl', command: 'Ctrl', modifier: true),
-                      laptopKey('Alt', command: 'Alt', modifier: true),
-                      laptopKey('Win', modifier: true),
-                      laptopKey('⇧', command: 'Shift', modifier: true),
-                      for (final e in const {
-                        '←': 'Left',
-                        '↑': 'Up',
-                        '↓': 'Down',
-                        '→': 'Right'
-                      }.entries)
-                        laptopKey(e.key, command: e.value),
-                      laptopKey('Click Phải', units: 2.5),
-                    ])),
-                    Expanded(
-                        child: Row(children: [
-                      for (final c in 'qwertyuiop'.split('')) laptopKey(c),
-                      laptopKey('⌫', units: 2, command: 'Backspace'),
-                    ])),
-                    Expanded(
-                        child: Row(children: [
-                      const Spacer(flex: 50),
-                      for (final c in 'asdfghjkl'.split('')) laptopKey(c),
-                      laptopKey('⏎', units: 2.25, command: 'Enter'),
-                      const Spacer(flex: 25),
-                    ])),
-                    Expanded(
-                        child: Row(children: [
-                      const Spacer(flex: 75),
-                      for (final c in 'zxcvbnm,.'.split('')) laptopKey(c),
-                      laptopKey('⇧',
-                          units: 2.25, command: 'Shift', modifier: true),
-                    ])),
-                    Expanded(
-                        child: Row(children: [
-                      laptopKey('Ctrl',
-                          units: 1.25, command: 'Ctrl', modifier: true),
-                      laptopKey('Alt',
-                          units: 1.25, command: 'Alt', modifier: true),
-                      laptopKey('Space', units: 5.5, command: 'Space'),
-                      for (final e in const {
-                        '←': 'Left',
-                        '↑': 'Up',
-                        '↓': 'Down',
-                        '→': 'Right'
-                      }.entries)
-                        laptopKey(e.key, command: e.value),
-                    ])),
-                  ]))),
-                ])));
+              row(0, [
+                laptopKey('Esc', command: 'Esc'),
+                for (var i = 1; i <= 12; i++) laptopKey('F$i', command: 'F$i'),
+                laptopKey('Del', command: 'Delete'),
+              ]),
+              row(1, [
+                for (final c in '`1234567890-='.split('')) laptopKey(c),
+                laptopKey('Backspace', units: 2, command: 'Backspace'),
+              ]),
+              row(2, [
+                laptopKey('Tab', units: 1.5, command: 'Tab'),
+                for (final c in 'QWERTYUIOP[]'.split('')) laptopKey(c),
+                laptopKey(r'\', units: 1.5),
+              ]),
+              row(3, [
+                laptopKey('Caps',
+                    units: 1.75, command: 'Shift', modifier: true),
+                for (final c in "ASDFGHJKL;'".split('')) laptopKey(c),
+                laptopKey('Enter', units: 2.25, command: 'Enter'),
+              ]),
+              row(4, [
+                laptopKey('Shift',
+                    units: 2.25, command: 'Shift', modifier: true),
+                for (final c in 'ZXCVBNM,./'.split('')) laptopKey(c),
+                laptopKey('Shift',
+                    units: 2.75, command: 'Shift', modifier: true),
+              ]),
+              row(5, [
+                laptopKey('Ctrl', units: 1.25, modifier: true),
+                laptopKey('Win', units: 1.25, modifier: true),
+                laptopKey('Alt', units: 1.25, modifier: true),
+                laptopKey('Space', units: 5, command: 'Space'),
+                laptopKey('Alt', units: 1.25, modifier: true),
+                laptopKey('Ctrl', units: 1.25, modifier: true),
+                for (final e in const {
+                  '←': 'Left',
+                  '↑': 'Up',
+                  '↓': 'Down',
+                  '→': 'Right'
+                }.entries)
+                  laptopKey(e.key, command: e.value),
+              ]),
+              row(6, [laptopKey('Click trái'), laptopKey('Click phải')],
+                  flex: 2),
+            ])));
       });
 
   Widget laptopDeck(Widget child) {
@@ -1182,12 +1209,14 @@ class KeyboardSurface extends StatefulWidget {
       required this.onScroll,
       required this.onDrag,
       this.child,
-      this.keyAt});
+      this.keyAt,
+      this.onPressed});
   final void Function(Offset) onMove;
   final void Function(String) onClick;
   final void Function(double) onScroll;
   final void Function(bool) onDrag;
   final Widget? child;
+  final void Function(Offset?)? onPressed;
   final VoidCallback? Function(Offset)? keyAt;
   @override
   State<KeyboardSurface> createState() => _KeyboardSurfaceState();
@@ -1202,6 +1231,7 @@ class _KeyboardSurfaceState extends State<KeyboardSurface> {
   VoidCallback? pressedKey;
   void finish() {
     hold?.cancel();
+    widget.onPressed?.call(null);
     if (dragging) {
       widget.onDrag(false);
     }
@@ -1228,10 +1258,12 @@ class _KeyboardSurfaceState extends State<KeyboardSurface> {
             distance = 0;
             pending = Offset.zero;
             pressedKey = widget.keyAt?.call(e.position);
+            widget.onPressed?.call(e.position);
           }
           points[e.pointer] = e.localPosition;
           if (points.length > 1) {
             two = true;
+            widget.onPressed?.call(null);
             hold?.cancel();
             if (dragging) {
               widget.onDrag(false);
@@ -1258,6 +1290,7 @@ class _KeyboardSurfaceState extends State<KeyboardSurface> {
           final wasMoved = moved;
           if (distance > 10) {
             moved = true;
+            widget.onPressed?.call(null);
             hold?.cancel();
           }
           if (!moved) {
@@ -1270,6 +1303,7 @@ class _KeyboardSurfaceState extends State<KeyboardSurface> {
           }
         },
         onPointerUp: (e) {
+          widget.onPressed?.call(null);
           points.remove(e.pointer);
           if (points.isEmpty) {
             hold?.cancel();

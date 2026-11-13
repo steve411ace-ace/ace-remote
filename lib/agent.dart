@@ -10,9 +10,17 @@ const defaultBaseUrl = 'http://100.101.127.41:18765';
 String sendKeysChord(String chord) {
   const modifiers = {'Ctrl': '^', 'Alt': '%', 'Shift': '+'};
   const special = {
-    'Enter': 'ENTER', 'Backspace': 'BS', 'Tab': 'TAB', 'Escape': 'ESC',
-    'Esc': 'ESC', 'Delete': 'DEL', 'Space': ' ',
-    'Left': 'LEFT', 'Right': 'RIGHT', 'Up': 'UP', 'Down': 'DOWN',
+    'Enter': 'ENTER',
+    'Backspace': 'BACKSPACE',
+    'Tab': 'TAB',
+    'Escape': 'ESC',
+    'Esc': 'ESC',
+    'Delete': 'DEL',
+    'Space': ' ',
+    'Left': 'LEFT',
+    'Right': 'RIGHT',
+    'Up': 'UP',
+    'Down': 'DOWN',
     'PrintScreen': 'PRTSC',
   };
   return chord.split('+').map((part) {
@@ -144,11 +152,14 @@ class Agent {
               d['height'] as int));
         }
         if (displays.isNotEmpty) {
-          final right = displays.map((d) => d.x + d.width)
+          final right = displays
+              .map((d) => d.x + d.width)
               .reduce((a, b) => a > b ? a : b);
-          final bottom = displays.map((d) => d.y + d.height)
+          final bottom = displays
+              .map((d) => d.y + d.height)
               .reduce((a, b) => a > b ? a : b);
-          virtualSize = Size(right - virtualOrigin.dx, bottom - virtualOrigin.dy);
+          virtualSize =
+              Size(right - virtualOrigin.dx, bottom - virtualOrigin.dy);
           // Client-side crop and relative movement via absolute /move.
           capabilities.addAll({'select_monitor', 'relative_move'});
         }
