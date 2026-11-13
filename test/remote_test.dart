@@ -622,7 +622,7 @@ void main() {
       ['Tab', ...'QWERTYUIOP[]'.split(''), r'\', 'PgDn'],
       ['Caps', ..."ASDFGHJKL;'".split(''), 'Enter', 'Home'],
       ['Shift', ...'ZXCVBNM,./'.split(''), 'Shift', '↑', 'End'],
-      ['Ctrl', 'Win', 'Alt', 'Left', 'Space', 'Left', 'Alt', 'Ctrl', '←', '↓', '→'],
+      ['Ctrl', 'Win', 'Alt', 'Left', 'Space', 'Right', 'Alt', 'Ctrl', '←', '↓', '→'],
       ['Click trái', 'Click phải'],
     ];
     for (var i = 0; i < rows.length; i++) {
@@ -649,14 +649,15 @@ void main() {
         'monitor': 1,
       });
     }
-    // Step 24, item 2: both 'Left' keys (either side of Space) click
-    // left at the cursor, same as 'Click trái'.
-    for (final finder in [find.text('Left').first, find.text('Left').last]) {
-      await tester.tap(finder);
+    // Step 25, item 1: 'Left' (left of Space) clicks left at the cursor
+    // and 'Right' (right of Space) clicks right, same as 'Click trái' /
+    // 'Click phải'.
+    for (final entry in {'Left': 'left', 'Right': 'right'}.entries) {
+      await tester.tap(find.text(entry.key));
       await tester.pump();
       expect(requests.last.url.path, '/click');
       expect(jsonDecode(requests.last.body), {
-        'button': 'left',
+        'button': entry.value,
         'x': 123,
         'y': 234,
         'monitor': 1,

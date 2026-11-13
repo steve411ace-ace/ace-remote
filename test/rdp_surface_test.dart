@@ -577,7 +577,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('RDP Left keys flanking Space click left at the cursor',
+  testWidgets('RDP Left/Right mouse keys flank Space and click at the cursor',
       (tester) async {
     const channel = MethodChannel('vn.aceremote.app/rdp/33');
     final messenger =
@@ -602,8 +602,8 @@ void main() {
     await controller.attach(33);
     // attach() re-sends the current touch mode ('mode'); not part of this test.
     calls.clear();
-    // Bottom row: one 'Left' mouse key on each side of Space, Alt-sized;
-    // the arrows are no longer all on this row (item 4 moved ↑ up).
+    // Bottom row: 'Left' on the left of Space clicks left, 'Right' on the
+    // right of Space clicks right (step 25, item 1); both Alt-sized.
     expect(
         tester
             .widgetList<Text>(find.descendant(
@@ -611,10 +611,14 @@ void main() {
                 matching: find.byType(Text)))
             .map((w) => w.data)
             .toList(),
-        ['Ctrl', 'Win', 'Alt', 'Left', 'Space', 'Left', 'Alt', 'Ctrl', '←', '↓', '→']);
-    expect(find.text('Left'), findsNWidgets(2));
-    // Not connected yet: a Left tap sends nothing.
-    await tester.tap(find.text('Left').first);
+        ['Ctrl', 'Win', 'Alt', 'Left', 'Space', 'Right', 'Alt', 'Ctrl', '←', '↓', '→']);
+    expect(find.text('Left'), findsOneWidget);
+    expect(find.text('Right'), findsOneWidget);
+    // Not connected yet: a mouse-key tap sends nothing.
+    await tester.tap(find.text('Left'));
+    await tester.pumpAndSettle();
+    expect(calls, isEmpty);
+    await tester.tap(find.text('Right'));
     await tester.pumpAndSettle();
     expect(calls, isEmpty);
     await messenger.handlePlatformMessage(
@@ -623,13 +627,14 @@ void main() {
             const MethodCall('state', {'state': 'connected'})),
         (_) {});
     await tester.pump();
-    // Each Left key clicks left at the cursor; no VK is sent ('Left' as a
-    // key label would be the VK_LEFT arrow, 0x125).
-    for (final finder in [find.text('Left').first, find.text('Left').last]) {
-      await tester.tap(finder);
+    // Each mouse key clicks at the cursor with its own button; no VK is
+    // sent ('Left'/'Right' as key labels would be the VK_LEFT/VK_RIGHT
+    // arrow keys, 0x125/0x127).
+    for (final entry in {'Left': 'left', 'Right': 'right'}.entries) {
+      await tester.tap(find.text(entry.key));
       await tester.pumpAndSettle();
       expect(calls.map((c) => c.method), ['click']);
-      expect(calls.single.arguments, {'button': 'left'});
+      expect(calls.single.arguments, {'button': entry.value});
       calls.clear();
     }
     await tester.pumpWidget(const SizedBox());
@@ -681,7 +686,7 @@ void main() {
       'Alt',
       'Left',
       'Space',
-      'Left',
+      'Right',
       'Alt',
       'Ctrl',
       '←',
@@ -768,10 +773,12 @@ void main() {
     }
 
     for (final entry in {
-      'PgUp': 0x21,
-      'PgDn': 0x22,
-      'Home': 0x24,
-      'End': 0x23,
+      // Step 25, item 2: the extended flag (0x100) — without it the
+      // FreeRDP lookup returned scancode 0 and the key did nothing.
+      'PgUp': 0x121,
+      'PgDn': 0x122,
+      'Home': 0x124,
+      'End': 0x123,
     }.entries) {
       calls.clear();
       await tap(entry.key);
@@ -824,6 +831,172 @@ void main() {
     await tester.tap(find.text('Ngắt'));
     await tester.pump();
     expect(calls.last.method, 'disconnect');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('stuck connecting state is cancelled after 30s (watchdog)',
+      (tester) async {
+    // Step 25, item 3: the spinner could sit forever if the native side
+    // stayed 'connecting' (dropped session + auto-reconnect retries, or a
+    // lost state event). The watchdog bounds it to 30s.
+    const channel = MethodChannel('vn.aceremote.app/rdp/45');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return call.method == 'status' ? {'state': 'idle'} : null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(45);
+    await tester.pump();
+    Future<void> event(Map<String, dynamic> state) async {
+      await messenger.handlePlatformMessage(
+          channel.name,
+          const StandardMethodCodec()
+              .encodeMethodCall(MethodCall('state', state)),
+          (_) {});
+      await tester.pump();
+    }
+
+    await event({'state': 'connecting'});
+    expect(find.text('Đang kết nối…'), findsOneWidget);
+    // Still busy at 29s: no disconnect yet.
+    await tester.pump(const Duration(seconds: 29));
+    expect(calls.where((c) => c.method == 'disconnect'), isEmpty);
+    expect(find.text('Đang kết nối…'), findsOneWidget);
+    // At 30s the watchdog fires: it cancels the attempt and the spinner
+    // is replaced by the form with a "Kết nối lại" button.
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+    expect(calls.where((c) => c.method == 'disconnect'), isNotEmpty);
+    expect(find.text('Đang kết nối…'), findsNothing);
+    expect(find.textContaining('Kết nối quá lâu'), findsOneWidget);
+    expect(find.text('Kết nối lại'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('resuming from background re-syncs a stale connecting state',
+      (tester) async {
+    // Step 25, item 3: returning from recents re-queries the native
+    // status, so a Dart state that went stale while the app was in the
+    // background (lost state event) is corrected instead of showing
+    // "Đang kết nối..." forever.
+    const channel = MethodChannel('vn.aceremote.app/rdp/46');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      // The native side is idle (previous session gone); Dart still
+      // thinks it is connecting.
+      return call.method == 'status' ? {'state': 'idle'} : null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(46);
+    await tester.pump();
+    await messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('state', {'state': 'connecting'})),
+        (_) {});
+    await tester.pump();
+    expect(find.text('Đang kết nối…'), findsOneWidget);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+    expect(controller.value['state'], 'idle');
+    expect(find.text('Đang kết nối…'), findsNothing);
+    expect(find.text('Kết nối'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('F row matches number-key width and Delete is wider',
+      (tester) async {
+    // Step 25, item 5: the F row totals 16 units like the number row, so
+    // F1-F12 are exactly as wide as the number keys; Delete (2.5 units)
+    // is clearly wider than an F key.
+    const channel = MethodChannel('vn.aceremote.app/rdp/47');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      return call.method == 'status' ? {'state': 'idle'} : null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    await tester.pumpAndSettle();
+    Size keySize(String label) => tester.getSize(find
+        .ancestor(of: find.text(label), matching: find.byType(Container))
+        .first);
+    expect(keySize('F1').width, closeTo(keySize('1').width, 1.0));
+    expect(keySize('F12').width, closeTo(keySize('0').width, 1.0));
+    expect(keySize('Del').width, greaterThan(keySize('F1').width * 2));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keyboard keeps sane key sizes on folded and unfolded screens',
+      (tester) async {
+    // Step 25, item 4: on the Fold6 folded screen (narrow, tall) the rows
+    // used to stretch so keys were tall rectangles; on the unfolded screen
+    // they were oversized. Row height now follows the key width and is
+    // clamped, so keys stay proportionate at both sizes with no overflow.
+    const channel = MethodChannel('vn.aceremote.app/rdp/48');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      return call.method == 'status' ? {'state': 'idle'} : null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    Size keySize(String label) => tester.getSize(find
+        .ancestor(of: find.text(label), matching: find.byType(Container))
+        .first);
+    for (final size in [
+      const Size(378, 800), // Fold6 folded (narrow, tall)
+      const Size(800, 800), // Fold6 unfolded (wide)
+    ]) {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1.0;
+      await tester.pump();
+      await tester.pumpAndSettle();
+      final key = keySize('A');
+      // Keys are never stretched tall and never tiny: row height is
+      // clamped to the 44-64dp band, and the key itself is 4dp shorter
+      // (2dp padding on each side).
+      expect(key.height, greaterThanOrEqualTo(40.0));
+      expect(key.height, lessThanOrEqualTo(60.0));
+      // All rows share the same height, and ↑ still equals ↓.
+      expect(keySize('↑').height, closeTo(keySize('↓').height, 1.0));
+      expect(keySize('F1').width, closeTo(keySize('1').width, 1.0));
+      expect(tester.takeException(), isNull);
+    }
+    tester.view.resetPhysicalSize();
+    tester.view.resetDevicePixelRatio();
     await tester.pumpWidget(const SizedBox());
   });
 

@@ -621,9 +621,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Agent get agent => widget.agent;
   ui.Image? frame;
   double fitScale = 1;
-  // Label of the key currently pressed (step 24 has two 'Left' keys with
-  // the same display label, so they carry distinct keyIds and only the one
-  // under the finger highlights).
+  // Label of the key currently pressed. Mouse keys carry a keyId when two
+  // keys share a display label (step 24 had two 'Left' keys); since step 25
+  // they are 'Left' and 'Right', so the label alone identifies each one.
   String? pressedLabel;
   String? failedPath;
   Map<String, dynamic>? failedData;
@@ -661,6 +661,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   double kbSwipeTwoFingerTravel = 0;
   Offset kbSwipeTwoFingerCenter = Offset.zero;
   bool kbSuppressKey = false;
+  // Step 25, item 4: label size for the current keyboard build, computed
+  // by keyboardPanel() from the available width (narrow folded screen vs
+  // wide unfolded screen) and read by laptopKey(). Only keyboardPanel()
+  // calls laptopKey(), and it sets this before any key is built.
+  double kbLabelSize = 13;
   Future<void> queue = Future.value();
   int pending = 0;
   int commandEpoch = 0;
@@ -708,7 +713,25 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     timer?.cancel();
     if (running) {
       poll();
+      // Step 25, item 3: in RDP mode the session may have dropped while
+      // the app was in the background, and a native state event can be
+      // lost if the platform view was disposed in the meantime — either
+      // leaves Dart showing a stale "Đang kết nối...". Re-query the native
+      // status on resume so the UI matches the real session state; the
+      // pane's connectionChanged listener reacts (refills credentials on
+      // failure/disconnect, arms the stuck-connect watchdog if still
+      // busy), so a stale spinner recovers instead of hanging forever.
+      if (widget.rdpMode) unawaited(_resumeRdp());
     }
+  }
+
+  /// Re-reads the native RDP status after returning from the background
+  /// and adopts it as the Dart state.
+  Future<void> _resumeRdp() async {
+    if (!mounted) return;
+    final status = await rdpController.status();
+    if (!mounted || status == null) return;
+    rdpController.value = Map<String, dynamic>.from(status);
   }
 
   Future<void> poll() async {
@@ -1067,9 +1090,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       if (widget.rdpMode) {
         // A swipe / two-finger gesture on the keyboard must not type a key.
         if (kbSuppressKey) { kbSuppressKey = false; return; }
-        // Mouse buttons (step 24, item 2): 'Left' clicks at the cursor, it
-        // is not a key — it must never reach rdpKey, where 'Left' means the
-        // VK_LEFT arrow key (0x125). Armed modifiers stay armed so
+        // Mouse buttons (step 24, item 2; step 25, item 1): 'Left' /
+        // 'Right' click at the cursor, they are not keys — they must never
+        // reach rdpKey, where 'Left'/'Right' mean the VK_LEFT/VK_RIGHT
+        // arrow keys (0x125/0x127). Armed modifiers stay armed so
         // Shift+click selection keeps working.
         if (mouseButton != null) {
           if (!rdpController.isConnected) return;
@@ -1115,8 +1139,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
     final target = GlobalKey();
     keyTargets[target] = press;
-    // Highlight id: defaults to the label; the two 'Left' mouse keys pass
-    // distinct keyIds so pressing one does not highlight the other.
+    // Highlight id: defaults to the label; pass a distinct keyId when two
+    // keys share a display label so pressing one does not highlight the
+    // other.
     keyLabels[target] = keyId ?? label;
     // Step 24, item 3: while Shift is armed (one-shot), the key shows the
     // character Shift will produce (2 -> @, 1 -> !, ...). The key still
@@ -1154,8 +1179,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                             child: FittedBox(
                                 fit: BoxFit.scaleDown,
                                 child: Text(displayLabel,
-                                    style: const TextStyle(
-                                        fontSize: 13,
+                                    style: TextStyle(
+                                        fontSize: kbLabelSize,
                                         fontWeight: FontWeight.w500,
                                         color: Colors.white)))))))));
   }
@@ -1163,17 +1188,43 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Widget keyboardPanel() => LayoutBuilder(builder: (context, box) {
         keyTargets.clear();
         keyLabels.clear();
-        Widget row(int index, List<Widget> keys, {int flex = 1}) => Expanded(
-            flex: flex,
+        // Step 25, item 4: the keyboard adapts to the screen instead of
+        // stretching with it. Before, every row was Expanded, so on the
+        // Fold6's tall narrow folded screen each key was stretched into a
+        // tall rectangle and the 13px labels looked lost (and the long
+        // PgUp/PgDn/Home/End labels were scaled tiny by FittedBox). Now
+        // the row height follows the key WIDTH (16.25 units across the
+        // widest rows), clamped so keys are never shorter than a
+        // comfortable tap target and never taller than a laptop key — and
+        // never taller than the space available (agent mode has a 7th row).
+        // The fixed-height keyboard is centered in its half; the 50/50
+        // split of remote screen / keyboard is unchanged, only the empty
+        // deck shows around the keyboard when the half is taller than it.
+        // The label size follows the row height so single-character labels
+        // stay proportionate; FittedBox still shrinks long labels
+        // (PgUp/PgDn/Home/End, Backspace, Enter) to fit their key.
+        final rowCount = widget.rdpMode ? 6 : 7;
+        final byWidth = (box.maxWidth / 16.25 * 1.15).clamp(44.0, 64.0);
+        final byHeight =
+            box.maxHeight.isFinite ? (box.maxHeight - 8) / rowCount : byWidth;
+        final rowHeight = min(byWidth, byHeight);
+        kbLabelSize = (rowHeight * 0.30).clamp(12.0, 16.0);
+        Widget row(int index, List<Widget> keys) => SizedBox(
+            height: rowHeight,
             child: Row(key: ValueKey('keyboard-row-$index'), children: keys));
         return Padding(
             padding: const EdgeInsets.all(4),
             child: trackpad(
-                child: Column(children: [
+                child: Center(
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+              // Step 25, item 5: the F row is 16 units like the number row
+              // below it (was 14), so F1-F12 are exactly as wide as the
+              // number keys. The extra width goes to Delete (2.5 units,
+              // clearly bigger) and Esc (1.5).
               row(0, [
-                laptopKey('Esc', command: 'Esc'),
+                laptopKey('Esc', units: 1.5, command: 'Esc'),
                 for (var i = 1; i <= 12; i++) laptopKey('F$i', command: 'F$i'),
-                laptopKey('Del', command: 'Delete'),
+                laptopKey('Del', units: 2.5, command: 'Delete'),
               ]),
               row(1, [
                 for (final c in '`1234567890-='.split('')) laptopKey(c),
@@ -1208,18 +1259,17 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                 laptopKey('↑', command: 'Up'),
                 laptopKey('End', command: 'End'),
               ]),
-              // Step 24, item 2: one 'Left' mouse key on each side of
-              // Space, Alt-sized (1.25), same colors as the other keys.
-              // Space is 4.5 (was 5) to fit them; the row total is 16.25,
-              // same as the row above, so Ctrl/Win/Alt and the arrows keep
-              // their exact widths.
+              // Step 25, item 1: 'Left' on the left of Space clicks left,
+              // 'Right' on the right of Space clicks right. Same size as
+              // Alt (1.25), same colors as the other keys. The labels are
+              // distinct now, so no keyId is needed for the highlight.
               row(5, [
                 laptopKey('Ctrl', units: 1.25, modifier: true),
                 laptopKey('Win', units: 1.25, modifier: true),
                 laptopKey('Alt', units: 1.25, modifier: true),
-                laptopKey('Left', units: 1.25, mouseButton: 'left', keyId: 'Left-1'),
+                laptopKey('Left', units: 1.25, mouseButton: 'left'),
                 laptopKey('Space', units: 4.5, command: 'Space'),
-                laptopKey('Left', units: 1.25, mouseButton: 'left', keyId: 'Left-2'),
+                laptopKey('Right', units: 1.25, mouseButton: 'right'),
                 laptopKey('Alt', units: 1.25, modifier: true),
                 laptopKey('Ctrl', units: 1.25, modifier: true),
                 for (final e in const {
@@ -1230,9 +1280,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                   laptopKey(e.key, command: e.value),
               ]),
               if (!widget.rdpMode)
-                row(6, [laptopKey('Click trái'), laptopKey('Click phải')],
-                    flex: 2),
-            ])));
+                row(6, [laptopKey('Click trái'), laptopKey('Click phải')]),
+            ]))));
       });
 
   /// Swipe-to-move wrapper for the RDP keyboard (step 23). The keyboard

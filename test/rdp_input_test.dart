@@ -23,11 +23,13 @@ void main() {
       'Down': 0x128,
       'Delete': 0x12e,
       'Win': 0x15b,
-      // Step 24, item 6: navigation column.
-      'PgUp': 0x21,
-      'PgDn': 0x22,
-      'End': 0x23,
-      'Home': 0x24,
+      // Step 25, item 2: navigation keys carry the FreeRDP extended flag
+      // (0x100) — the plain VKs are not in FreeRDP's normal table, so the
+      // JNI lookup returned scancode 0 and the server ignored the key.
+      'PgUp': 0x121,
+      'PgDn': 0x122,
+      'End': 0x123,
+      'Home': 0x124,
       '-': 0xbd,
       '=': 0xbb,
       '[': 0xdb,
@@ -115,8 +117,9 @@ void main() {
     expect(shiftedLabel('Esc'), 'Esc');
     expect(shiftedLabel('Space'), 'Space');
     expect(shiftedLabel('Shift'), 'Shift');
-    // Step 24, item 2: the 'Left' mouse key is not a character key, so
-    // Shift never changes its label.
+    // Step 24, item 2; step 25, item 1: the 'Left'/'Right' mouse keys are
+    // not character keys, so Shift never changes their labels.
     expect(shiftedLabel('Left'), 'Left');
+    expect(shiftedLabel('Right'), 'Right');
   });
 }

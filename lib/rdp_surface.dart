@@ -160,6 +160,17 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
   bool passwordEdited = false;
   bool usernameEdited = false;
   Future<void> storageQueue = Future<void>.value();
+  // Step 25, item 3: watchdog for a stuck connecting/disconnecting state.
+  // The busy overlay shows whenever the native state is 'connecting' or
+  // 'disconnecting', and nothing in the flow ever timed that out: if the
+  // RDP session drops while the app is in the background (FreeRDP
+  // auto-reconnect retries up to 20 times, each with its own network
+  // timeouts) or a native state event is lost, the spinner can sit there
+  // forever and the only way out was Android Back. The watchdog bounds it
+  // to 30 seconds: a normal local connect finishes in a few seconds, so
+  // anything still busy after 30s is stale and gets cancelled, with the
+  // form (and the saved credentials) back for a manual reconnect.
+  Timer? _busyWatchdog;
 
   @override
   void initState() {
@@ -230,6 +241,18 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
   }
 
   void connectionChanged() {
+    // Step 25, item 3: (re)arm the stuck-connect watchdog while the native
+    // side is busy. Every phase change (creating -> auth -> connecting)
+    // re-arms it, so a slow-but-progressing connect is never cut off; a
+    // state that stops changing for 30s is treated as stuck.
+    final busyState = controller.value['state'];
+    if (busyState == 'connecting' || busyState == 'disconnecting') {
+      _busyWatchdog?.cancel();
+      _busyWatchdog = Timer(const Duration(seconds: 30), _onBusyTimeout);
+    } else {
+      _busyWatchdog?.cancel();
+      _busyWatchdog = null;
+    }
     if (controller.isConnected) {
       if (pendingPassword != null) {
         final secret = pendingPassword!;
@@ -276,6 +299,31 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
     }
   }
 
+  /// Step 25, item 3: the busy state has not changed for 30 seconds, so
+  /// the connect/disconnect attempt is stale. Cancel it on the native side
+  /// (stop() cancels a pending connect or disconnects a live session) and,
+  /// if the native side never reports back, force the Dart state to
+  /// 'failed' so the spinner goes away and the user gets the form with a
+  /// "Kết nối lại" button instead of an endless spinner. A late native
+  /// event after this is harmless: 'disconnected' matches, and a late
+  /// 'connected' cannot happen here because stop() sets stopping=true and
+  /// OnConnectionSuccess refuses to report 'connected' while stopping.
+  Future<void> _onBusyTimeout() async {
+    if (!mounted) return;
+    final state = controller.value['state'];
+    if (state != 'connecting' && state != 'disconnecting') return;
+    debugPrint('AceRdp: busy state "$state" stuck >30s, forcing disconnect');
+    await disconnect();
+    if (!mounted) return;
+    final after = controller.value['state'];
+    if (after == 'connecting' || after == 'disconnecting') {
+      controller.value = {
+        'state': 'failed',
+        'error': 'Kết nối quá lâu, đã hủy. Hãy bấm Kết nối lại.',
+      };
+    }
+  }
+
   void queueStorage(Future<void> Function() action) {
     storageQueue = storageQueue.then((_) => action()).catchError((Object error) {
       if (mounted) setState(() => localError = 'Không cập nhật được mật khẩu đã lưu.');
@@ -284,6 +332,8 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
 
   @override
   void dispose() {
+    _busyWatchdog?.cancel();
+    _busyWatchdog = null;
     controller.removeListener(connectionChanged);
     pendingPassword = null;
     pendingUsername = null;

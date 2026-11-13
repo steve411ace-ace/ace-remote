@@ -61,11 +61,21 @@ int? rdpVirtualKey(String key) {
     'Up': 0x126,
     'Right': 0x127,
     'Down': 0x128,
-    // Step 24, item 6: navigation column (PgUp/PgDn/Home/End).
-    'PgUp': 0x21,
-    'PgDn': 0x22,
-    'End': 0x23,
-    'Home': 0x24,
+    // Step 25, item 2: navigation keys are EXTENDED keys in FreeRDP's
+    // KeyboardMapper (KBD4X table, IBM_ENHANCED type 4). The JNI
+    // freerdp_send_key_event looks the VK up with
+    // GetVirtualScanCodeFromVirtualKeyCode(keycode, 4), which searches the
+    // NORMAL table when the 0x100 bit is clear and the EXTENDED table when
+    // it is set. PgUp/PgDn/Home/End only exist in the extended table
+    // (KBD4_X49/X51/X4F/X47); the normal table holds VK_NUMPAD9/3/1/7 at
+    // those scancodes instead. So the plain VKs (0x21-0x24) found nothing,
+    // the lookup returned scancode 0, and the server ignored the key —
+    // exactly the "no response" An saw. Same rule as the arrows
+    // (0x125-0x128), Delete (0x12e) and Win (0x15b).
+    'PgUp': vkExtKey | 0x21,
+    'PgDn': vkExtKey | 0x22,
+    'End': vkExtKey | 0x23,
+    'Home': vkExtKey | 0x24,
     '-': 0xbd,
     '=': 0xbb,
     '[': 0xdb,
