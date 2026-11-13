@@ -27,6 +27,9 @@ jobs:
           flutter-version: '3.50.0'
           channel: stable
       - uses: android-actions/setup-android@v3
+        with:
+          # Override the action default ('tools platform-tools'): tools is obsolete.
+          packages: platform-tools
       - name: Install SDK 37, Build Tools 37.0.0, CMake 4.1.2 and NDK r29
         shell: bash
         run: |
