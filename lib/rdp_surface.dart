@@ -7,6 +7,51 @@ import 'package:material_ui/material_ui.dart';
 class RdpController extends ValueNotifier<Map<String, dynamic>> {
   RdpController() : super({'state': 'idle'});
   MethodChannel? _channel;
+
+  /// Relative-touch (trackpad) mode. Single source of truth observed by the
+  /// header toggle and the bottom half (keyboard vs trackpad). Sent to native
+  /// via the 'mode' channel call; the native side owns the cursor position.
+  final trackpadMode = ValueNotifier<bool>(false);
+
+  /// Bottom-half (keyboard / trackpad) visibility. False = the remote screen
+  /// fills the whole RemotePage. Observed by RemotePage's RDP layout.
+  final keyboardVisible = ValueNotifier<bool>(true);
+
+  /// Switch touch mode. Sends the mode to native (fire-and-forget if the
+  /// view is not attached yet; attach() re-sends the current mode).
+  Future<void> setTrackpadMode(bool value) async {
+    if (trackpadMode.value == value) return;
+    trackpadMode.value = value;
+    await _sendMode();
+  }
+
+  void setKeyboardVisible(bool value) {
+    keyboardVisible.value = value;
+  }
+
+  Future<void> _sendMode() async {
+    final channel = _channel;
+    if (channel == null) return;
+    try {
+      await channel.invokeMethod<void>(
+          'mode', {'trackpad': trackpadMode.value});
+    } on PlatformException {
+      // Native side not ready; the mode is kept in Dart and re-sent on attach.
+    }
+  }
+
+  /// Move the cursor by a relative delta (surface physical pixels). The native
+  /// side converts to framebuffer pixels with the trackpad sensitivity.
+  Future<void> moveRelative(Offset deltaPhysicalPx) async {
+    await _channel?.invokeMethod<void>(
+        'moveRelative', {'dx': deltaPhysicalPx.dx, 'dy': deltaPhysicalPx.dy});
+  }
+
+  /// Send one wheel notch at the current cursor position.
+  Future<void> scrollWheel(bool down) async {
+    await _channel?.invokeMethod<void>('scroll', {'down': down});
+  }
+
   Future<void> attach(int id) async {
     final channel = MethodChannel('vn.aceremote.app/rdp/$id');
     _channel = channel;
@@ -17,6 +62,8 @@ class RdpController extends ValueNotifier<Map<String, dynamic>> {
     });
     final initial = await channel.invokeMapMethod<String, dynamic>('status');
     if (_channel == channel && initial != null) value = initial;
+    // Re-send the current touch mode in case it was toggled before attach.
+    if (_channel == channel) await _sendMode();
   }
 
   Future<void> connect(String host, int port, String username, String password) async {
@@ -46,7 +93,12 @@ class RdpController extends ValueNotifier<Map<String, dynamic>> {
       _channel?.invokeMapMethod<String, dynamic>('status');
   void detach() { _channel?.setMethodCallHandler(null); _channel = null; }
   @override
-  void dispose() { detach(); super.dispose(); }
+  void dispose() {
+    detach();
+    trackpadMode.dispose();
+    keyboardVisible.dispose();
+    super.dispose();
+  }
 }
 
 class RdpSurface extends StatefulWidget {
@@ -98,40 +150,92 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
   bool submitting = false;
   String? localError;
   String? pendingPassword;
+  String? pendingUsername;
   bool passwordEdited = false;
+  bool usernameEdited = false;
   Future<void> storageQueue = Future<void>.value();
+  // Connected-header auto-hide: the header hides a few seconds after connect
+  // so it stops covering the remote screen; a small button brings it back.
+  bool headerVisible = true;
+  Timer? headerHideTimer;
 
   @override
   void initState() {
     super.initState();
     controller.addListener(connectionChanged);
-    unawaited(restorePassword());
+    unawaited(restoreCredentials());
   }
 
-  Future<void> restorePassword() async {
+  Future<void> restoreCredentials() async {
     try {
-      final saved = await storage.read(key: rdpPasswordKey, aOptions: rdpStorageOptions);
-      if (mounted && !passwordEdited && !submitting) password.text = saved ?? '';
+      final savedUser =
+          await storage.read(key: rdpUsernameKey, aOptions: rdpStorageOptions);
+      final savedSecret =
+          await storage.read(key: rdpPasswordKey, aOptions: rdpStorageOptions);
+      if (!mounted || submitting) return;
+      if (!usernameEdited) username.text = savedUser ?? '';
+      if (!passwordEdited) password.text = savedSecret ?? '';
     } on PlatformException {
-      if (mounted) setState(() => localError = 'Không đọc được mật khẩu đã lưu.');
+      if (mounted) {
+        setState(() => localError = 'Không đọc được thông tin đăng nhập đã lưu.');
+      }
     }
   }
 
   void connectionChanged() {
-    if (controller.isConnected && pendingPassword != null) {
-      final secret = pendingPassword!;
+    if (controller.isConnected) {
+      showHeaderTemporarily();
+      if (pendingPassword != null) {
+        final secret = pendingPassword!;
+        pendingPassword = null;
+        queueStorage(() => storage.write(
+            key: rdpPasswordKey, value: secret, aOptions: rdpStorageOptions));
+      }
+      if (pendingUsername != null) {
+        final user = pendingUsername!;
+        pendingUsername = null;
+        queueStorage(() => storage.write(
+            key: rdpUsernameKey, value: user, aOptions: rdpStorageOptions));
+      }
+    } else if (['failed', 'disconnected', 'disconnecting']
+        .contains(controller.value['state'])) {
+      headerHideTimer?.cancel();
+      headerVisible = true;
       pendingPassword = null;
-      queueStorage(() => storage.write(key: rdpPasswordKey, value: secret, aOptions: rdpStorageOptions));
-    } else if (['failed', 'disconnected', 'disconnecting'].contains(controller.value['state'])) {
-      pendingPassword = null;
-      if (controller.value['state'] == 'failed' || controller.value['state'] == 'disconnected') {
-        // Login form is visible again: refill the saved password so the user
-        // does not have to retype it to reconnect. restorePassword() still
-        // respects passwordEdited (set by onChanged) if the user types first.
+      pendingUsername = null;
+      if (controller.value['state'] == 'failed' ||
+          controller.value['state'] == 'disconnected') {
+        // Login form is visible again: refill the saved credentials so the
+        // user does not have to retype them to reconnect. restoreCredentials()
+        // still respects the *Edited flags (set by onChanged) if the user
+        // types first.
         passwordEdited = false;
-        unawaited(restorePassword());
+        usernameEdited = false;
+        unawaited(restoreCredentials());
       }
     }
+  }
+
+  /// Show the connected header and hide it again after 3 seconds.
+  void showHeaderTemporarily() {
+    headerHideTimer?.cancel();
+    if (!headerVisible && mounted) setState(() => headerVisible = true);
+    headerHideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && controller.isConnected) {
+        setState(() => headerVisible = false);
+      }
+    });
+  }
+
+  void toggleTrackpadMode() {
+    unawaited(
+        controller.setTrackpadMode(!controller.trackpadMode.value));
+    showHeaderTemporarily();
+  }
+
+  void toggleKeyboardVisible() {
+    controller.setKeyboardVisible(!controller.keyboardVisible.value);
+    showHeaderTemporarily();
   }
 
   void queueStorage(Future<void> Function() action) {
@@ -140,16 +244,12 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
     });
   }
 
-  void forgetPassword() {
-    passwordEdited = true;
-    pendingPassword = null;
-    password.clear();
-    queueStorage(() => storage.delete(key: rdpPasswordKey, aOptions: rdpStorageOptions));
-  }
   @override
   void dispose() {
+    headerHideTimer?.cancel();
     controller.removeListener(connectionChanged);
     pendingPassword = null;
+    pendingUsername = null;
     password.clear();
     for (final field in [host, port, username, password]) { field.dispose(); }
     if (widget.controller == null) controller.dispose();
@@ -164,13 +264,16 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
     setState(() { submitting = true; localError = null; });
     FocusScope.of(context).unfocus();
     passwordEdited = true;
+    usernameEdited = true;
     try {
       await Future<void>.delayed(const Duration(milliseconds: 400));
       if (!mounted) return;
       pendingPassword = password.text;
+      pendingUsername = username.text.trim();
       await controller.connect(host.text.trim(), number, username.text.trim(), password.text);
     } on PlatformException {
       pendingPassword = null;
+      pendingUsername = null;
       if (mounted) setState(() => localError = 'Không gửi được yêu cầu kết nối. Hãy thử lại.');
     } finally {
       if (mounted) {
@@ -181,6 +284,7 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
   }
   Future<void> disconnect() async {
     pendingPassword = null;
+    pendingUsername = null;
     password.clear();
     try { await controller.disconnect(); }
     on PlatformException {
@@ -195,11 +299,38 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
       builder: (context, status, _) {
         final state = status['state'];
         if (state == 'connected') {
+          // The header auto-hides a few seconds after connect so it stops
+          // covering the remote screen; a small button brings it back.
+          // The mode / keyboard toggles live here so they stay reachable
+          // even when the keyboard is hidden (never inside the keyboard area).
           return Align(alignment: Alignment.topRight, child: SafeArea(bottom: false,
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              const Chip(label: Text('Đã kết nối')),
-              FilledButton(onPressed: disconnect, child: const Text('Ngắt kết nối')),
-            ])));
+            child: ValueListenableBuilder<bool>(
+              valueListenable: controller.trackpadMode,
+              builder: (context, isTrackpad, _) => ValueListenableBuilder<bool>(
+                valueListenable: controller.keyboardVisible,
+                builder: (context, kbVisible, _) => headerVisible
+                    ? Wrap(alignment: WrapAlignment.end, spacing: 6, children: [
+                        const Chip(label: Text('Đã kết nối')),
+                        FilledButton.tonal(
+                            onPressed: toggleTrackpadMode,
+                            child: Text(isTrackpad ? 'Chạm' : 'Trackpad')),
+                        FilledButton.tonal(
+                            onPressed: toggleKeyboardVisible,
+                            child: Text(kbVisible ? 'Ẩn bàn phím' : 'Hiện bàn phím')),
+                        FilledButton(
+                            onPressed: disconnect,
+                            child: const Text('Ngắt kết nối')),
+                      ])
+                    : IconButton(
+                        tooltip: 'Hiện điều khiển',
+                        onPressed: showHeaderTemporarily,
+                        icon: const Icon(Icons.expand_more),
+                        style: IconButton.styleFrom(
+                            backgroundColor: Colors.black45,
+                            foregroundColor: Colors.white),
+                      ),
+              ),
+            )));
         }
         final busy = submitting || state == 'connecting' || state == 'disconnecting';
         return Center(child: SingleChildScrollView(padding: const EdgeInsets.all(12),
@@ -219,9 +350,8 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
                   if (localError != null) Text(localError!),
                   TextField(key: const ValueKey('rdp-host'), controller: host, decoration: const InputDecoration(labelText: 'Host')),
                   TextField(key: const ValueKey('rdp-port'), controller: port, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Port')),
-                  TextField(key: const ValueKey('rdp-username'), controller: username, autocorrect: false, decoration: const InputDecoration(labelText: 'Username')),
+                  TextField(key: const ValueKey('rdp-username'), controller: username, onChanged: (_) => usernameEdited = true, autocorrect: false, decoration: const InputDecoration(labelText: 'Username')),
                   TextField(key: const ValueKey('rdp-password'), controller: password, onChanged: (_) => passwordEdited = true, obscureText: true, autocorrect: false, enableSuggestions: false, decoration: const InputDecoration(labelText: 'Password')),
-                  TextButton(onPressed: forgetPassword, child: const Text('Quên mật khẩu')),
                   FilledButton(onPressed: connect, child: Text(state == 'failed' ? 'Kết nối lại' : 'Kết nối')),
                 ],
               ]))))));

@@ -11,22 +11,22 @@ import 'package:http/testing.dart';
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
 
-  testWidgets('saved password restores obscured and forget deletes it', (tester) async {
-    FlutterSecureStorage.setMockInitialValues({rdpPasswordKey: 'saved-secret'});
+  testWidgets('saved username and password restore; password stays obscured', (tester) async {
+    FlutterSecureStorage.setMockInitialValues({rdpUsernameKey: 'saved-user', rdpPasswordKey: 'saved-secret'});
     await tester.pumpWidget(const MaterialApp(home: Scaffold(body: RdpConnectionPane())));
     await tester.pumpAndSettle();
+    final userField = tester.widget<TextField>(find.byKey(const ValueKey('rdp-username')));
+    expect(userField.controller!.text, 'saved-user');
     final field = tester.widget<TextField>(find.byKey(const ValueKey('rdp-password')));
     expect(field.obscureText, isTrue);
     expect(field.controller!.text, 'saved-secret');
-    await tester.ensureVisible(find.text('Quên mật khẩu'));
-    await tester.tap(find.text('Quên mật khẩu'));
-    await tester.pumpAndSettle();
-    expect(field.controller!.text, isEmpty);
-    expect(await storage.read(key: rdpPasswordKey, aOptions: rdpStorageOptions), isNull);
+    // The "Quên mật khẩu" button is gone (An asked to remove it): the saved
+    // credentials stay until the app data is cleared / the app is removed.
+    expect(find.text('Quên mật khẩu'), findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('password saved only after native connection success', (tester) async {
+  testWidgets('username and password saved only after native connection success', (tester) async {
     const channel = MethodChannel('vn.aceremote.app/rdp/19');
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     messenger.setMockMethodCallHandler(channel, (call) async => call.method == 'status' ? {'state': 'idle'} : null);
@@ -41,9 +41,11 @@ void main() {
     await tester.tap(find.text('Kết nối'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
+    expect(await storage.read(key: rdpUsernameKey, aOptions: rdpStorageOptions), isNull);
     expect(await storage.read(key: rdpPasswordKey, aOptions: rdpStorageOptions), isNull);
     controller.value = {'state': 'connected'};
     await tester.pumpAndSettle();
+    expect(await storage.read(key: rdpUsernameKey, aOptions: rdpStorageOptions), 'user');
     expect(await storage.read(key: rdpPasswordKey, aOptions: rdpStorageOptions), 'success-secret');
     controller.value = {'state': 'connected', 'resizeFailure': 'DISP unavailable'};
     await tester.pump();
@@ -53,8 +55,8 @@ void main() {
     controller.dispose();
   });
 
-  testWidgets('password refills from storage after disconnect', (tester) async {
-    FlutterSecureStorage.setMockInitialValues({rdpPasswordKey: 'saved-secret'});
+  testWidgets('credentials refill from storage after disconnect', (tester) async {
+    FlutterSecureStorage.setMockInitialValues({rdpUsernameKey: 'saved-user', rdpPasswordKey: 'saved-secret'});
     const channel = MethodChannel('vn.aceremote.app/rdp/21');
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     messenger.setMockMethodCallHandler(channel, (call) async => call.method == 'status' ? {'state': 'idle'} : null);
@@ -63,6 +65,7 @@ void main() {
     await controller.attach(21);
     await tester.pumpWidget(MaterialApp(home: Scaffold(body: RdpConnectionPane(controller: controller))));
     await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byKey(const ValueKey('rdp-username'))).controller!.text, 'saved-user');
     expect(tester.widget<TextField>(find.byKey(const ValueKey('rdp-password'))).controller!.text, 'saved-secret');
     await tester.enterText(find.byKey(const ValueKey('rdp-username')), 'user');
     await tester.ensureVisible(find.text('Kết nối'));
@@ -71,8 +74,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     controller.value = {'state': 'connected'};
     await tester.pumpAndSettle();
+    // The username typed for this successful connect is now the saved one.
+    expect(await storage.read(key: rdpUsernameKey, aOptions: rdpStorageOptions), 'user');
     controller.value = {'state': 'disconnected'};
     await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byKey(const ValueKey('rdp-username'))).controller!.text, 'user');
     expect(tester.widget<TextField>(find.byKey(const ValueKey('rdp-password'))).controller!.text, 'saved-secret');
     await tester.pumpWidget(const SizedBox());
     controller.dispose();
@@ -105,6 +111,8 @@ void main() {
     await controller.sendCursor(1, 2, 0x800);
     await controller.clickAtLastPosition('left');
     await controller.attach(0);
+    // attach() re-sends the current touch mode ('mode'); not part of this test.
+    calls.clear();
     await messenger.handlePlatformMessage(
         channel.name,
         const StandardMethodCodec().encodeMethodCall(
@@ -250,6 +258,144 @@ void main() {
     expect(tester.widget<TextField>(find.byKey(const ValueKey('rdp-password'))).controller!.text, isEmpty);
     await event({'state': 'failed', 'authAttempted': false});
     expect(find.text('Chưa đi qua callback xác thực; chưa xác định nguyên nhân.'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('connected header auto-hides, reveals, and toggles mode/keyboard', (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/23');
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return call.method == 'status' ? {'state': 'idle'} : null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final controller = RdpController();
+    await controller.attach(23);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: RdpConnectionPane(controller: controller))));
+    await tester.pumpAndSettle();
+    calls.clear();
+    controller.value = {'state': 'connected'};
+    await tester.pump();
+    expect(find.text('Đã kết nối'), findsOneWidget);
+    expect(find.text('Ngắt kết nối'), findsOneWidget);
+    expect(find.text('Trackpad'), findsOneWidget);
+    expect(find.text('Ẩn bàn phím'), findsOneWidget);
+    // Toggle to trackpad mode: sends 'mode' to native and relabels the button.
+    await tester.tap(find.text('Trackpad'));
+    await tester.pump();
+    expect(controller.trackpadMode.value, isTrue);
+    expect(find.text('Chạm'), findsOneWidget);
+    expect(calls.map((c) => c.method), contains('mode'));
+    expect(calls.lastWhere((c) => c.method == 'mode').arguments, {'trackpad': true});
+    // The header stays for 3s after the tap, then auto-hides.
+    await tester.pump(const Duration(seconds: 3));
+    expect(find.text('Đã kết nối'), findsNothing);
+    expect(find.text('Ngắt kết nối'), findsNothing);
+    expect(find.byTooltip('Hiện điều khiển'), findsOneWidget);
+    // Reveal button brings the header back.
+    await tester.tap(find.byTooltip('Hiện điều khiển'));
+    await tester.pump();
+    expect(find.text('Đã kết nối'), findsOneWidget);
+    // Hide the keyboard: the toggle relabels and the controller flips.
+    await tester.tap(find.text('Ẩn bàn phím'));
+    await tester.pump();
+    expect(controller.keyboardVisible.value, isFalse);
+    expect(find.text('Hiện bàn phím'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
+
+  testWidgets('RDP trackpad mode swaps keyboard for a trackpad surface', (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/0');
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(0);
+    await tester.pump();
+    expect(find.text('Esc'), findsOneWidget);
+    expect(find.byKey(const ValueKey('rdp-trackpad')), findsNothing);
+    calls.clear();
+    await controller.setTrackpadMode(true);
+    await tester.pump();
+    expect(find.text('Esc'), findsNothing);
+    expect(find.byKey(const ValueKey('rdp-trackpad')), findsOneWidget);
+    expect(calls.map((c) => c.method), contains('mode'));
+    expect(calls.lastWhere((c) => c.method == 'mode').arguments,
+        {'trackpad': true});
+    // Drag on the trackpad sends relative moves.
+    calls.clear();
+    await tester.drag(find.byKey(const ValueKey('rdp-trackpad')),
+        const Offset(60, 0));
+    await tester.pump();
+    expect(calls.map((c) => c.method), contains('moveRelative'));
+    final move = calls.firstWhere((c) => c.method == 'moveRelative');
+    expect((move.arguments as Map)['dx'], greaterThan(0));
+    // Quick tap clicks left at the cursor.
+    calls.clear();
+    await tester.tap(find.byKey(const ValueKey('rdp-trackpad')));
+    await tester.pump();
+    expect(calls.map((c) => c.method), contains('click'));
+    expect(calls.lastWhere((c) => c.method == 'click').arguments,
+        {'button': 'left'});
+    // Two-finger tap clicks right.
+    calls.clear();
+    final center =
+        tester.getCenter(find.byKey(const ValueKey('rdp-trackpad')));
+    final first = await tester.startGesture(center);
+    final second = await tester.startGesture(center + const Offset(20, 0));
+    await first.up();
+    await second.up();
+    await tester.pump();
+    expect(calls.map((c) => c.method), contains('click'));
+    expect(calls.lastWhere((c) => c.method == 'click').arguments,
+        {'button': 'right'});
+    // Back to touch mode restores the keyboard.
+    await controller.setTrackpadMode(false);
+    await tester.pump();
+    expect(find.text('Esc'), findsOneWidget);
+    expect(find.byKey(const ValueKey('rdp-trackpad')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('hiding the keyboard lets the remote fill the screen', (tester) async {
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    addTearDown(() => tester.view.resetPhysicalSize());
+    addTearDown(() => tester.view.resetDevicePixelRatio());
+    tester.view.devicePixelRatio = 2;
+    tester.view.physicalSize = const Size(1600, 1200);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    await tester.pump();
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    var remote = tester.getRect(find.byKey(const ValueKey('remote-half')));
+    var keyboard = tester.getRect(find.byKey(const ValueKey('keyboard-half')));
+    expect(remote.height, 300);
+    expect(keyboard.height, remote.height);
+    controller.keyboardVisible.value = false;
+    await tester.pump();
+    expect(find.byKey(const ValueKey('keyboard-half')), findsNothing);
+    remote = tester.getRect(find.byKey(const ValueKey('remote-half')));
+    expect(remote.height, 600);
+    controller.keyboardVisible.value = true;
+    await tester.pump();
+    remote = tester.getRect(find.byKey(const ValueKey('remote-half')));
+    keyboard = tester.getRect(find.byKey(const ValueKey('keyboard-half')));
+    expect(remote.height, 300);
+    expect(keyboard.height, remote.height);
     await tester.pumpWidget(const SizedBox());
   });
 

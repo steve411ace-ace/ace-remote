@@ -96,6 +96,17 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
     private var lastX = 0
     private var lastY = 0
     private var touched = false
+    // Relative (trackpad) touch: the finger position never moves the cursor.
+    // Drag moves the cursor by the finger delta; tap clicks at the cursor.
+    private var trackpadMode = false
+    private var trackpadCursorX = 0f
+    private var trackpadCursorY = 0f
+    private var trackpadLastX = 0f
+    private var trackpadLastY = 0f
+    private var trackpadMoved = false
+    // Cursor moves 1.5x the finger delta (in framebuffer pixels): fast
+    // enough to cross the screen with a short drag, slow enough to aim.
+    private val TRACKPAD_SENSITIVITY = 1.5f
     private class PendingMove(val owner: Attempt, var x: Int, var y: Int)
     private var lastMovePending: PendingMove? = null
     private var touchOwner: Attempt? = null
@@ -150,6 +161,22 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
             } }
         }
     }
+    // Relative cursor move shared by the top-half trackpad touch and the
+    // bottom-half trackpad ('moveRelative' channel call). Deltas arrive in
+    // surface physical pixels; convert to framebuffer pixels with the
+    // aspect-fit scale and the trackpad sensitivity. A float accumulator
+    // avoids rounding drift from per-event truncation to Int.
+    private fun moveCursorRelative(a: Attempt, dxSurfacePx: Float, dySurfacePx: Float) {
+        if (bitmap == null || !surfaceReady) return
+        val scale = minOf(widthPx.toFloat() / bitmapWidth, heightPx.toFloat() / bitmapHeight)
+        if (scale <= 0f) return
+        trackpadCursorX = (trackpadCursorX + dxSurfacePx / scale * TRACKPAD_SENSITIVITY)
+            .coerceIn(0f, (bitmapWidth - 1).toFloat())
+        trackpadCursorY = (trackpadCursorY + dySurfacePx / scale * TRACKPAD_SENSITIVITY)
+            .coerceIn(0f, (bitmapHeight - 1).toFloat())
+        lastX = trackpadCursorX.toInt(); lastY = trackpadCursorY.toInt()
+        cursorInput(a, lastX, lastY, PTRFLAGS_MOVE)
+    }
     private fun clickAt(a: Attempt, button: Int) {
         if (bitmap == null) return
         cursorInput(a, lastX, lastY, PTRFLAGS_MOVE)
@@ -161,7 +188,96 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         if (release && leftHeld) touchOwner?.let { cursorInput(it, lastX, lastY, PTRFLAGS_LBUTTON) }
         touchOwner = null; leftHeld = false; rightHandled = false
         scrollMode = false; scrollAccum = 0f; twoFingerTap = false; twoFingerTravel = 0f
+        trackpadMoved = false
         lastMovePending = null
+    }
+    // Relative (trackpad) touch on the remote screen. Unlike absolute touch,
+    // the finger position never moves the cursor: drag moves the cursor by
+    // the finger delta (no button held), a quick tap clicks left AT THE
+    // CURSOR, a two-finger tap clicks right at the cursor, and a two-finger
+    // drag scrolls. Long-press still right-clicks, as in absolute mode.
+    // Touches in the letterbox still work here (the whole surface is the
+    // trackpad), so there is no bounds check. Called with lock held.
+    private fun onTouchTrackpad(event: MotionEvent): Boolean {
+        val a = inputAttempt()
+        if (a == null || bitmap == null || !surfaceReady) {
+            resetTouch(false)
+            return false
+        }
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                resetTouch()
+                touchOwner = a; downX = event.x; downY = event.y; downTime = event.eventTime
+                trackpadLastX = event.x; trackpadLastY = event.y; trackpadMoved = false
+                trackpadCursorX = lastX.toFloat(); trackpadCursorY = lastY.toFloat()
+                cursorInput(a, lastX, lastY, PTRFLAGS_MOVE)
+                main.postDelayed(longPress, 500)
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (touchOwner === a && event.pointerCount >= 2) {
+                    main.removeCallbacks(longPress)
+                    if (leftHeld) cursorInput(a, lastX, lastY, PTRFLAGS_LBUTTON)
+                    twoFingerTap = !scrollMode && !leftHeld && !rightHandled && event.pointerCount == 2
+                    leftHeld = false; scrollMode = true
+                    twoFingerX = (event.getX(0) + event.getX(1)) / 2
+                    twoFingerY = (event.getY(0) + event.getY(1)) / 2
+                    scrollY = (event.getY(0) + event.getY(1)) / 2; scrollAccum = 0f
+                }
+            }
+            MotionEvent.ACTION_MOVE -> if (touchOwner === a) {
+                if (scrollMode) {
+                    if (event.pointerCount >= 2) {
+                        val centerY = (event.getY(0) + event.getY(1)) / 2
+                        val centerX = (event.getX(0) + event.getX(1)) / 2
+                        twoFingerTravel += kotlin.math.hypot(centerX - twoFingerX, centerY - twoFingerY)
+                        twoFingerX = centerX; twoFingerY = centerY
+                        scrollAccum += centerY - scrollY; scrollY = centerY
+                        while (kotlin.math.abs(scrollAccum) >= 48f) {
+                            val down = scrollAccum > 0
+                            val amount = if (down) -WHEEL_DELTA else WHEEL_DELTA
+                            cursorInput(a, lastX, lastY, PTRFLAGS_WHEEL or
+                                (if (down) PTRFLAGS_WHEEL_NEGATIVE else 0) or (amount and 0xFF))
+                            scrollAccum += if (down) -48f else 48f
+                        }
+                    }
+                } else if (!rightHandled) {
+                    val dx = event.x - trackpadLastX
+                    val dy = event.y - trackpadLastY
+                    trackpadLastX = event.x; trackpadLastY = event.y
+                    if (kotlin.math.hypot(event.x - downX, event.y - downY) > 12f) {
+                        main.removeCallbacks(longPress)
+                        trackpadMoved = true
+                    }
+                    moveCursorRelative(a, dx, dy)
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                if (touchOwner === a) {
+                    if (leftHeld) cursorInput(a, lastX, lastY, PTRFLAGS_MOVE)
+                    else if (!scrollMode && !rightHandled && !trackpadMoved &&
+                        event.eventTime - downTime < 500)
+                        clickAt(a, PTRFLAGS_LBUTTON)
+                }
+                resetTouch()
+            }
+            MotionEvent.ACTION_CANCEL -> resetTouch()
+            // Stay in scroll mode until ACTION_UP, including the one-finger tail.
+            MotionEvent.ACTION_POINTER_UP -> {
+                main.removeCallbacks(longPress)
+                if (touchOwner === a && twoFingerTap && event.pointerCount == 2) {
+                    val centerX = (event.getX(0) + event.getX(1)) / 2
+                    val centerY = (event.getY(0) + event.getY(1)) / 2
+                    twoFingerTravel += kotlin.math.hypot(centerX - twoFingerX, centerY - twoFingerY)
+                    // Right-click at the cursor, not at the finger midpoint.
+                    if (event.eventTime - downTime < 500 && twoFingerTravel < 48f &&
+                        kotlin.math.abs(scrollAccum) < 48f) {
+                        clickAt(a, PTRFLAGS_RBUTTON)
+                    }
+                }
+                twoFingerTap = false
+            }
+        }
+        true
     }
     private fun onTouch(event: MotionEvent): Boolean = synchronized(lock) {
         val a = inputAttempt()
@@ -169,6 +285,7 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
             resetTouch(false)
             return@synchronized false
         }
+        if (trackpadMode) return@synchronized onTouchTrackpad(event)
         val scale = minOf(widthPx.toFloat() / bitmapWidth, heightPx.toFloat() / bitmapHeight)
         if (scale <= 0f) return@synchronized true
         val x = (event.x - (widthPx - bitmapWidth * scale) / 2) / scale
@@ -319,6 +436,41 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                         inputAttempt()?.let { a ->
                             if (button == "left" || button == "right")
                                 clickAt(a, if (button == "left") PTRFLAGS_LBUTTON else PTRFLAGS_RBUTTON)
+                        }
+                    }
+                    result.success(null)
+                }
+                "mode" -> {
+                    val trackpad = call.argument<Boolean>("trackpad") ?: false
+                    synchronized(lock) {
+                        if (trackpadMode != trackpad) {
+                            trackpadMode = trackpad
+                            resetTouch()
+                            trackpadCursorX = lastX.toFloat()
+                            trackpadCursorY = lastY.toFloat()
+                            Log.d("AceRdp", "trackpad mode=" +
+                                if (trackpad) "relative" else "absolute")
+                        }
+                    }
+                    result.success(null)
+                }
+                "moveRelative" -> {
+                    val dx = (call.argument<Number>("dx"))?.toFloat()
+                    val dy = (call.argument<Number>("dy"))?.toFloat()
+                    if (dx != null && dy != null) {
+                        synchronized(lock) {
+                            inputAttempt()?.let { a -> moveCursorRelative(a, dx, dy) }
+                        }
+                    }
+                    result.success(null)
+                }
+                "scroll" -> {
+                    val down = call.argument<Boolean>("down") ?: false
+                    synchronized(lock) {
+                        inputAttempt()?.let { a ->
+                            val amount = if (down) -WHEEL_DELTA else WHEEL_DELTA
+                            cursorInput(a, lastX, lastY, PTRFLAGS_WHEEL or
+                                (if (down) PTRFLAGS_WHEEL_NEGATIVE else 0) or (amount and 0xFF))
                         }
                     }
                     result.success(null)

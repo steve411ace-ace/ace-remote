@@ -1,13 +1,8 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
 import 'dart:ui' as ui;
-import 'package:crypto/crypto.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
-import 'rdp_credentials.dart';
-import 'package:local_auth/local_auth.dart';
-import 'package:local_auth_android/local_auth_android.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'agent.dart';
 import 'rdp_input.dart';
@@ -22,44 +17,27 @@ const mockMode = bool.fromEnvironment('ACE_MOCK');
 const rdpPrototype = bool.fromEnvironment('ACE_RDP');
 
 class AceApp extends StatefulWidget {
-  const AceApp({super.key, this.now = DateTime.now});
-  final DateTime Function() now;
+  const AceApp({super.key});
   @override
   State<AceApp> createState() => _AceAppState();
 }
 
 class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
-  final auth = LocalAuthentication();
-  final pin = TextEditingController();
-  final confirmPin = TextEditingController();
   final navigator = GlobalKey<NavigatorState>();
   SharedPreferences? prefs;
   late final Agent agent;
   ThemeMode theme = ThemeMode.system;
   int pollMs = 500;
-  bool ready = false, unlocked = false, hasPin = false, busy = false;
+  bool ready = false;
   String? error;
-  late DateTime lastActivity;
-  bool securityReady = false;
-  bool biometricAvailable = false;
-  Timer? idle;
-  int failed = 0;
-  DateTime? retryAt;
   @override
   void initState() {
     super.initState();
     unawaited(
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
-    lastActivity = widget.now();
     WidgetsBinding.instance.addObserver(this);
     agent = Agent(baseUrl: defaultBaseUrl, mock: mockMode);
     load();
-    idle = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (unlocked &&
-          widget.now().difference(lastActivity) >= const Duration(minutes: 5)) {
-        lock();
-      }
-    });
   }
 
   Future<void> load() async {
@@ -70,42 +48,18 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
       pollMs = prefs!.getInt('ace_remote_v1_poll_ms') == 1000 ? 1000 : 500;
       theme = ThemeMode
           .values[prefs!.getInt('ace_remote_v1_theme')?.clamp(0, 2) ?? 0];
-      hasPin = await storage.read(key: 'ace_pin_hash') != null;
-      try {
-        biometricAvailable =
-            await auth.canCheckBiometrics.timeout(const Duration(seconds: 2)) &&
-                (await auth
-                        .getAvailableBiometrics()
-                        .timeout(const Duration(seconds: 2)))
-                    .isNotEmpty;
-      } catch (_) {
-        biometricAvailable = false;
-      }
       if (mounted) {
-        setState(() {
-          ready = true;
-          securityReady = true;
-        });
+        setState(() => ready = true);
       }
     } catch (_) {
       if (mounted) {
         setState(() {
           ready = true;
           error =
-              'Không mở được kho bảo mật. Khởi động lại ứng dụng để thử lại.';
+              'Không mở được kho dữ liệu. Khởi động lại ứng dụng để thử lại.';
         });
       }
     }
-  }
-
-  void lock() {
-    if (!mounted) {
-      return;
-    }
-    navigator.currentState?.popUntil((r) => r.isFirst);
-    pin.clear();
-    confirmPin.clear();
-    setState(() => unlocked = false);
   }
 
   @override
@@ -113,93 +67,6 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       unawaited(
           SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
-    }
-    if (state == AppLifecycleState.resumed &&
-        widget.now().difference(lastActivity) >= const Duration(minutes: 5)) {
-      lock();
-    }
-  }
-
-  String digest(String salt, String value) {
-    // Iterated salted digest; secret material is additionally in Android Keystore storage.
-    List<int> bytes = utf8.encode('$salt:$value');
-    for (var i = 0; i < 60000; i++) {
-      bytes = sha256.convert(bytes).bytes;
-    }
-    return base64Encode(bytes);
-  }
-
-  Future<void> unlock({bool biometric = false}) async {
-    if (!securityReady ||
-        busy ||
-        (retryAt != null && widget.now().isBefore(retryAt!))) {
-      return;
-    }
-    setState(() {
-      busy = true;
-      error = null;
-    });
-    try {
-      var ok = false;
-      if (biometric && hasPin) {
-        ok = await auth.authenticate(
-            localizedReason: 'Mở khóa Ace Remote',
-            authMessages: const [
-              AndroidAuthMessages(
-                signInHint: 'Xác minh vân tay',
-                cancelButton: 'Hủy',
-                signInTitle: 'Mở khóa phiên',
-              )
-            ],
-            biometricOnly: true);
-      } else {
-        if (!RegExp(r'^\d{4,6}$').hasMatch(pin.text)) {
-          throw Exception('PIN phải gồm 4–6 chữ số.');
-        }
-        if (!hasPin) {
-          if (pin.text != confirmPin.text) {
-            throw Exception('Hai mã PIN chưa khớp.');
-          }
-          final salt = base64Encode(
-              List.generate(32, (_) => Random.secure().nextInt(256)));
-          await storage.write(key: 'ace_pin_salt', value: salt);
-          await storage.write(
-              key: 'ace_pin_hash', value: digest(salt, pin.text));
-          hasPin = true;
-          ok = true;
-        } else {
-          final salt = await storage.read(key: 'ace_pin_salt');
-          final expected = await storage.read(key: 'ace_pin_hash');
-          ok = salt != null && digest(salt, pin.text) == expected;
-        }
-      }
-      if (!ok) {
-        failed++;
-        if (failed >= 5) {
-          retryAt = widget.now().add(const Duration(seconds: 30));
-        }
-        throw Exception(failed >= 5
-            ? 'Thử lại sau 30 giây.'
-            : 'Chưa mở khóa. Kiểm tra PIN hoặc vân tay.');
-      }
-      failed = 0;
-      retryAt = null;
-      pin.clear();
-      confirmPin.clear();
-      lastActivity = widget.now();
-      if (mounted) {
-        setState(() => unlocked = true);
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => error = e is PlatformException || e is LocalAuthException
-            ? 'Vân tay chưa sẵn sàng. Hãy dùng PIN.'
-            : e.toString().replaceFirst('Exception: ', ''));
-      }
-    } finally {
-      if (mounted) {
-        setState(() => busy = false);
-      }
     }
   }
 
@@ -215,11 +82,8 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
   @override
   void dispose() {
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
-    idle?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     agent.dispose();
-    pin.dispose();
-    confirmPin.dispose();
     super.dispose();
   }
 
@@ -249,71 +113,12 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
                 foregroundColor: Colors.white),
             brightness: Brightness.dark,
             useMaterial3: true),
-        builder: (context, child) => Listener(
-            onPointerDown: (_) => lastActivity = widget.now(),
-            onPointerMove: (_) => lastActivity = widget.now(),
-            child: child),
         home: !ready
             ? const Scaffold(body: Center(child: CircularProgressIndicator()))
-            : !unlocked
+            : error != null
                 ? Scaffold(
                     appBar: AppBar(title: const Text('Ace Remote')),
-                    body: Center(
-                        child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 400),
-                            child: ListView(
-                                shrinkWrap: true,
-                                padding: const EdgeInsets.all(24),
-                                children: [
-                                  Text(
-                                      hasPin
-                                          ? 'Mở khóa phiên'
-                                          : 'Đặt PIN lần đầu',
-                                      style: const TextStyle(fontSize: 24)),
-                                  TextField(
-                                      controller: pin,
-                                      obscureText: true,
-                                      maxLength: 6,
-                                      keyboardType: TextInputType.number,
-                                      inputFormatters: [
-                                        FilteringTextInputFormatter.digitsOnly
-                                      ],
-                                      decoration: const InputDecoration(
-                                          labelText: 'PIN (4–6 số)')),
-                                  if (!hasPin)
-                                    TextField(
-                                        controller: confirmPin,
-                                        obscureText: true,
-                                        maxLength: 6,
-                                        keyboardType: TextInputType.number,
-                                        inputFormatters: [
-                                          FilteringTextInputFormatter.digitsOnly
-                                        ],
-                                        decoration: const InputDecoration(
-                                            labelText: 'Nhập lại PIN')),
-                                  if (error != null)
-                                    Text(error!,
-                                        style: TextStyle(
-                                            color: Theme.of(context)
-                                                .colorScheme
-                                                .error)),
-                                  FilledButton(
-                                      onPressed: busy || !securityReady
-                                          ? null
-                                          : () => unlock(),
-                                      child: Text(busy
-                                          ? 'Đang kiểm tra…'
-                                          : hasPin
-                                              ? 'Mở khóa'
-                                              : 'Lưu PIN')),
-                                  if (hasPin && biometricAvailable)
-                                    OutlinedButton(
-                                        onPressed: busy
-                                            ? null
-                                            : () => unlock(biometric: true),
-                                        child: const Text('Dùng vân tay')),
-                                ]))),
-                  )
+                    body: Center(child: Text(error!)))
                 : Home(
                     agent: agent,
                     pollMs: () => pollMs,
@@ -326,8 +131,7 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
                           theme = mode;
                           pollMs = ms;
                           await save();
-                        }),
-                    onLock: lock),
+                        })),
       );
 }
 
@@ -336,12 +140,10 @@ class Home extends StatefulWidget {
       {super.key,
       required this.agent,
       required this.pollMs,
-      required this.settings,
-      required this.onLock});
+      required this.settings});
   final Agent agent;
   final int Function() pollMs;
   final Widget Function() settings;
-  final VoidCallback onLock;
   @override
   State<Home> createState() => _HomeState();
 }
@@ -392,11 +194,7 @@ class _HomeState extends State<Home> {
               await Navigator.push(context,
                   MaterialPageRoute<void>(builder: (_) => widget.settings()));
               check();
-            }),
-        IconButton(
-            tooltip: 'Khóa phiên',
-            onPressed: widget.onLock,
-            icon: const Icon(Icons.lock))
+            })
       ]),
       body: ListView(padding: const EdgeInsets.all(16), children: [
         if (widget.agent.mock)
@@ -1086,6 +884,19 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
             ])));
       });
 
+  /// Bottom-half trackpad for RDP trackpad mode. Drag moves the cursor
+  /// relatively, a quick tap clicks left at the cursor, a two-finger tap
+  /// clicks right, and a two-finger drag scrolls. No left-button hold while
+  /// dragging (trackpad move only), unlike absolute touch on the remote
+  /// screen. Calls are fire-and-forget; native coalesces MOVE events.
+  Widget trackpadPanel() => RdpTrackpad(
+        onMove: (delta) => unawaited(rdpController.moveRelative(delta)),
+        onTap: () => unawaited(rdpController.clickAtLastPosition('left')),
+        onTwoFingerTap: () =>
+            unawaited(rdpController.clickAtLastPosition('right')),
+        onScroll: (down) => unawaited(rdpController.scrollWheel(down)),
+      );
+
   Widget laptopDeck(Widget child) {
     return Theme(
         data: ThemeData.dark(useMaterial3: true),
@@ -1164,16 +975,30 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Widget build(BuildContext context) => Scaffold(
         body: LayoutBuilder(builder: (context, box) {
           if (widget.rdpMode) {
-            return Column(children: [
-              Expanded(
-                  child: SizedBox(
-                      key: const ValueKey('remote-half'),
-                      child: RdpConnectionPane(controller: rdpController))),
-              Expanded(
-                  child: SizedBox(
-                      key: const ValueKey('keyboard-half'),
-                      child: laptopDeck(keyboardPanel()))),
-            ]);
+            // The bottom half follows the RDP controller: keyboard or
+            // trackpad (trackpad mode), hidden entirely (keyboard hidden) so
+            // the remote screen fills the whole page. Switching never drops
+            // the RDP session and never resets the cursor.
+            return ValueListenableBuilder<bool>(
+              valueListenable: rdpController.trackpadMode,
+              builder: (context, isTrackpad, _) => ValueListenableBuilder<bool>(
+                valueListenable: rdpController.keyboardVisible,
+                builder: (context, kbVisible, _) => Column(children: [
+                  Expanded(
+                      child: SizedBox(
+                          key: const ValueKey('remote-half'),
+                          child:
+                              RdpConnectionPane(controller: rdpController))),
+                  if (kbVisible)
+                    Expanded(
+                        child: SizedBox(
+                            key: const ValueKey('keyboard-half'),
+                            child: laptopDeck(isTrackpad
+                                ? trackpadPanel()
+                                : keyboardPanel()))),
+                ]),
+              ),
+            );
           }
           final d = display;
           final size = d == null
@@ -1267,6 +1092,120 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               : content;
         }),
       );
+}
+
+/// Bottom-half trackpad for RDP trackpad mode (shown instead of the keyboard).
+/// Drag moves the cursor relatively (no button held), a quick tap clicks left
+/// at the cursor, a two-finger tap clicks right, and a two-finger drag scrolls
+/// (one notch per 48 logical px). Deltas are reported in surface physical
+/// pixels (logical pixels x devicePixelRatio); native converts them to
+/// framebuffer pixels with the trackpad sensitivity. No long-press gesture:
+/// two-finger tap is the right-click here.
+class RdpTrackpad extends StatefulWidget {
+  const RdpTrackpad(
+      {super.key,
+      required this.onMove,
+      required this.onTap,
+      required this.onTwoFingerTap,
+      required this.onScroll});
+  final void Function(Offset deltaPhysicalPx) onMove;
+  final VoidCallback onTap;
+  final VoidCallback onTwoFingerTap;
+  final void Function(bool down) onScroll;
+  @override
+  State<RdpTrackpad> createState() => _RdpTrackpadState();
+}
+
+class _RdpTrackpadState extends State<RdpTrackpad> {
+  final Map<int, Offset> points = {};
+  double distance = 0;
+  int downTime = 0;
+  bool twoFinger = false;
+  double scrollAccum = 0;
+  double twoFingerTravel = 0;
+  Offset twoFingerCenter = Offset.zero;
+
+  @override
+  Widget build(BuildContext context) {
+    final dpr = MediaQuery.of(context).devicePixelRatio;
+    return Listener(
+      key: const ValueKey('rdp-trackpad'),
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (e) {
+        if (points.isEmpty) {
+          distance = 0;
+          twoFinger = false;
+          scrollAccum = 0;
+          twoFingerTravel = 0;
+          downTime = e.timeStamp.inMilliseconds;
+        }
+        points[e.pointer] = e.localPosition;
+        if (points.length == 2) {
+          twoFinger = true;
+          twoFingerCenter = (points.values.first + points.values.last) / 2;
+          scrollAccum = 0;
+          twoFingerTravel = 0;
+        }
+      },
+      onPointerMove: (e) {
+        final old = points[e.pointer];
+        if (old == null) return;
+        final delta = e.localPosition - old;
+        points[e.pointer] = e.localPosition;
+        if (points.length == 2) {
+          final center = (points.values.first + points.values.last) / 2;
+          final centerDelta = center - twoFingerCenter;
+          twoFingerCenter = center;
+          twoFingerTravel += centerDelta.distance;
+          scrollAccum += centerDelta.dy;
+          while (scrollAccum.abs() >= 48) {
+            widget.onScroll(scrollAccum > 0);
+            scrollAccum += scrollAccum > 0 ? -48 : 48;
+          }
+        } else if (points.length == 1 && !twoFinger) {
+          distance += delta.distance;
+          widget.onMove(delta * dpr);
+        }
+      },
+      onPointerUp: (e) {
+        points.remove(e.pointer);
+        if (points.isEmpty) {
+          final duration = e.timeStamp.inMilliseconds - downTime;
+          if (twoFinger) {
+            if (twoFingerTravel < 48 &&
+                scrollAccum.abs() < 48 &&
+                duration < 500) {
+              widget.onTwoFingerTap();
+            }
+          } else if (distance < 12 && duration < 500) {
+            widget.onTap();
+          }
+          twoFinger = false;
+          distance = 0;
+          scrollAccum = 0;
+          twoFingerTravel = 0;
+        }
+      },
+      onPointerCancel: (_) {
+        points.clear();
+        twoFinger = false;
+        distance = 0;
+        scrollAccum = 0;
+        twoFingerTravel = 0;
+      },
+      child: Container(
+        color: const Color(0xff16171a),
+        child: const Center(
+          child: IgnorePointer(
+            child: Text(
+                'Trackpad\nKéo để di chuột • Chạm để click trái\n2 ngón: click phải • kéo để cuộn',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white38, fontSize: 13)),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class KeyboardSurface extends StatefulWidget {

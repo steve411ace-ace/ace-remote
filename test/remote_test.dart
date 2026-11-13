@@ -7,6 +7,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 int stateMonitor(WidgetTester tester) {
   final dynamic state = tester.state(find.byType(RemotePage));
@@ -21,12 +22,22 @@ void main() {
         home: Home(
             agent: agent,
             pollMs: () => 1000,
-            settings: () => const SizedBox(),
-            onLock: () {})));
+            settings: () => const SizedBox())));
     await tester.pumpAndSettle();
     expect(find.text('Mac\u0042ook'), findsNothing);
     expect(find.textContaining('Chưa h\u1ed7 trợ'), findsNothing);
     expect(find.byType(Card), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('AceApp opens straight to Home without a PIN gate',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    await tester.pumpWidget(const AceApp());
+    await tester.pumpAndSettle();
+    expect(find.text('Đặt PIN lần đầu'), findsNothing);
+    expect(find.text('Mở khóa phiên'), findsNothing);
+    expect(find.text('ace — Windows'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
