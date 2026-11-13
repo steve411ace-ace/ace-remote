@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Step 27: home-screen widget 4x2 (4 columns x 2 rows).
+     250x110dp is the standard 4x2 size (cells: w = 70*n - 30, h = 70*n - 30).
+     targetCellWidth/Height (API 31+) pin the grid size; updatePeriodMillis=0
+     because the app pushes updates itself (HomeWidget.updateWidget) — the
+     widget never polls on its own. resizeMode lets the user stretch it. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="250dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="4"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/ace_remote_widget"
+    android:previewLayout="@layout/ace_remote_widget"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen" />

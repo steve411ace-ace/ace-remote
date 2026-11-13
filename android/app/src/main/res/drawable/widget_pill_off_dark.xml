@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Step 27: rounded pill for a widget toggle that is OFF, dark theme. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#3A4542" />
+    <corners android:radius="20dp" />
+</shape>

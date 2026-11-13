@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Step 27: rounded pill for a widget toggle that is ON (accent teal, same
+     as the app's active key color 0xff2bb3a3). Used for the "Kết nối" key
+     and for Trackpad/Bàn phím when they are on. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#2BB3A3" />
+    <corners android:radius="20dp" />
+</shape>

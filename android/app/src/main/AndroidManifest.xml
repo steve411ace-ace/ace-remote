@@ -28,7 +28,30 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Step 27: lets home_widget launch intents reach MainActivity
+                 (HomeWidget.initiallyLaunchedFromHomeWidget /
+                 HomeWidget.widgetClicked). The intent is explicit (it names
+                 MainActivity), this filter only declares the action. -->
+            <intent-filter>
+                <action android:name="es.antonborri.home_widget.action.LAUNCH"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
         </activity>
+        <!-- Step 27: home-screen widget 4x2 (AppWidgetProvider + RemoteViews).
+             The provider reads its data from the home_widget
+             SharedPreferences file and draws the widget; every button is a
+             launch intent into MainActivity (no background callback). -->
+        <receiver
+            android:name=".AceRemoteWidgetProvider"
+            android:exported="true"
+            android:label="Ace Remote">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/ace_remote_widget_info"/>
+        </receiver>
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="com.freerdp.afreerdp.fileprovider"

@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:math';
 import 'dart:ui' as ui;
+import 'package:home_widget/home_widget.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'agent.dart';
+import 'home_widget_data.dart';
 import 'rdp_connections.dart';
 import 'rdp_input.dart';
 import 'rdp_surface.dart';
@@ -29,8 +31,20 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
   late final Agent agent;
   ThemeMode theme = ThemeMode.system;
   int pollMs = 500;
+  // Step 27: widget background opacity 0 (fully transparent) .. 100.
+  int widgetOpacity = widgetOpacityDefault;
   bool ready = false;
   String? error;
+  // Step 27: id of the connection whose RemotePage is currently open (set
+  // by Home taps and by widget deep links, cleared when the page pops).
+  // A widget "connect" tap for the connection that is already open is a
+  // no-op — pushing a second RemotePage would try a second RDP session
+  // while the first is still running.
+  final openConnectionId = ValueNotifier<String?>(null);
+  StreamSubscription<Uri?>? _widgetClickedSub;
+  // A widget tap that arrives before load() finishes is queued here and
+  // handled once the app is ready.
+  Uri? _pendingWidgetUri;
   @override
   void initState() {
     super.initState();
@@ -38,6 +52,21 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
     WidgetsBinding.instance.addObserver(this);
     agent = Agent(baseUrl: defaultBaseUrl, mock: mockMode);
+    // Step 27: widget taps while the app is already running arrive here.
+    try {
+      _widgetClickedSub = HomeWidget.widgetClicked.listen(
+        (uri) {
+          if (!ready) {
+            _pendingWidgetUri = uri;
+          } else {
+            unawaited(_handleWidgetUri(uri));
+          }
+        },
+        onError: (_) {},
+      );
+    } catch (_) {
+      // Widget plugin unavailable (e.g. in tests): the app works without it.
+    }
     load();
   }
 
@@ -49,8 +78,26 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
       pollMs = prefs!.getInt('ace_remote_v1_poll_ms') == 1000 ? 1000 : 500;
       theme = ThemeMode
           .values[prefs!.getInt('ace_remote_v1_theme')?.clamp(0, 2) ?? 0];
+      widgetOpacity = prefs!.getInt(widgetOpacityKey)?.clamp(0, 100) ??
+          widgetOpacityDefault;
       if (mounted) {
         setState(() => ready = true);
+      }
+      // Step 27: refresh the widget with the loaded theme/opacity, then
+      // handle a widget tap that launched the app cold (if any).
+      unawaited(HomeWidgetSync.syncFromPrefs());
+      final launchedUri = await _initialWidgetUri();
+      if (launchedUri != null) {
+        if (mounted && ready) {
+          unawaited(_handleWidgetUri(launchedUri));
+        } else {
+          _pendingWidgetUri = launchedUri;
+        }
+      }
+      final pending = _pendingWidgetUri;
+      _pendingWidgetUri = null;
+      if (pending != null && mounted && ready) {
+        unawaited(_handleWidgetUri(pending));
       }
     } catch (_) {
       if (mounted) {
@@ -75,13 +122,154 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
     await prefs?.setString('ace_remote_v1_base_url', agent.baseUrl);
     await prefs?.setInt('ace_remote_v1_poll_ms', pollMs);
     await prefs?.setInt('ace_remote_v1_theme', theme.index);
+    // Step 27: persist the widget opacity, then push theme + opacity to
+    // the widget right away.
+    await prefs?.setInt(widgetOpacityKey, clampWidgetOpacity(widgetOpacity));
     if (mounted) {
       setState(() {});
     }
+    unawaited(HomeWidgetSync.syncFromPrefs());
   }
+
+  /// Step 27: the deep link the app was cold-started with from the widget,
+  /// or null when it was not launched from the widget. Never throws.
+  Future<Uri?> _initialWidgetUri() async {
+    try {
+      return await HomeWidget.initiallyLaunchedFromHomeWidget();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Step 27: runs one parsed widget deep link. Every action ends with a
+  /// widget sync so the widget always reflects the new state.
+  Future<void> _handleWidgetUri(Uri? uri) async {
+    final action = parseHomeWidgetUri(uri);
+    if (action == null) return;
+    final store = RdpConnectionStore();
+    try {
+      switch (action.kind) {
+        case HomeWidgetActionKind.openApp:
+          return;
+        case HomeWidgetActionKind.connect:
+          final connections = await store.load();
+          RdpConnection? target;
+          for (final c in connections) {
+            if (c.id == action.connectionId) {
+              target = c;
+              break;
+            }
+          }
+          if (target == null || !mounted) return;
+          if (openConnectionId.value == target.id) return;
+          await HomeWidgetSync.setCurrentId(target.id);
+          unawaited(HomeWidgetSync.syncFromPrefs());
+          _openRemote(target);
+        case HomeWidgetActionKind.toggleTrackpad:
+        case HomeWidgetActionKind.toggleKeyboard:
+          final connections = await store.load();
+          final current = await _widgetCurrentConnection(connections);
+          if (current == null) return;
+          final updated = action.kind == HomeWidgetActionKind.toggleTrackpad
+              ? current.copyWith(trackpadMode: !current.trackpadMode)
+              : current.copyWith(keyboardVisible: !current.keyboardVisible);
+          await store.update(updated);
+          unawaited(HomeWidgetSync.syncFromPrefs());
+          _showWidgetNotice(
+              action.kind == HomeWidgetActionKind.toggleTrackpad
+                  ? '${updated.trackpadMode ? 'Đã bật' : 'Đã tắt'} Trackpad cho ${updated.name}'
+                  : '${updated.keyboardVisible ? 'Đã hiện' : 'Đã ẩn'} bàn phím cho ${updated.name}');
+        case HomeWidgetActionKind.nextConnection:
+          final connections = await store.load();
+          if (connections.length < 2) return;
+          final current = await _widgetCurrentConnection(connections);
+          final nextId = nextConnectionId(connections, current?.id);
+          if (nextId == null) return;
+          final next = connections.firstWhere((c) => c.id == nextId);
+          await HomeWidgetSync.setCurrentId(next.id);
+          unawaited(HomeWidgetSync.syncFromPrefs());
+          _showWidgetNotice('Đã chuyển sang ${next.name}');
+      }
+    } catch (_) {
+      // A failed widget action must not crash the app.
+    }
+  }
+
+  /// Step 27: the connection the widget currently shows (stored current id,
+  /// falling back to the favorite / first one, same rule as the widget).
+  Future<RdpConnection?> _widgetCurrentConnection(
+    List<RdpConnection> connections,
+  ) async {
+    if (connections.isEmpty) return null;
+    final currentId = prefs?.getString(widgetCurrentConnectionKey);
+    if (currentId != null && currentId.isNotEmpty) {
+      for (final c in connections) {
+        if (c.id == currentId) return c;
+      }
+    }
+    return connections.firstWhere(
+      (c) => c.favorite,
+      orElse: () => connections.first,
+    );
+  }
+
+  /// Step 27: opens a RemotePage for [connection] from a widget deep link
+  /// (same page Home taps open). Tracks the open id so a second tap for
+  /// the same connection is a no-op.
+  void _openRemote(RdpConnection connection) {
+    final nav = navigator.currentState;
+    if (nav == null) return;
+    openConnectionId.value = connection.id;
+    nav.popUntil((route) => route.isFirst);
+    unawaited(nav
+        .push(MaterialPageRoute(
+          builder: (_) => RemotePage(
+            agent: agent,
+            pollMs: () => pollMs,
+            settings: _settingsPage,
+            rdpMode: true,
+            rdpConnection: connection,
+          ),
+        ))
+        .then((_) {
+      if (openConnectionId.value == connection.id) {
+        openConnectionId.value = null;
+      }
+    }));
+  }
+
+  /// Step 27: short confirmation after a widget quick-toggle / switch.
+  /// Best-effort: silently skipped when no scaffold is on screen yet.
+  void _showWidgetNotice(String message) {
+    try {
+      final context = navigator.currentContext;
+      if (context == null || !mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (_) {}
+  }
+
+  /// Step 27: the Settings page, built from the current app state. Used by
+  /// Home and by RemotePage's settings menu so both see the same
+  /// widget-opacity value.
+  Widget _settingsPage() => SettingsPage(
+        theme: theme,
+        onThemeChanged: (mode) async {
+          theme = mode;
+          await save();
+        },
+        widgetOpacity: widgetOpacity,
+        onWidgetOpacityChanged: (value) async {
+          widgetOpacity = value;
+          await save();
+        },
+      );
 
   @override
   void dispose() {
+    unawaited(_widgetClickedSub?.cancel());
+    openConnectionId.dispose();
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     WidgetsBinding.instance.removeObserver(this);
     agent.dispose();
@@ -123,12 +311,9 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
                 : Home(
                     agent: agent,
                     pollMs: () => pollMs,
-                    settings: () => SettingsPage(
-                        theme: theme,
-                        onThemeChanged: (mode) async {
-                          theme = mode;
-                          await save();
-                        })),
+                    settings: _settingsPage,
+                    openConnectionId: openConnectionId,
+                  ),
       );
 }
 
@@ -137,10 +322,15 @@ class Home extends StatefulWidget {
       {super.key,
       required this.agent,
       required this.pollMs,
-      required this.settings});
+      required this.settings,
+      this.openConnectionId});
   final Agent agent;
   final int Function() pollMs;
   final Widget Function() settings;
+  // Step 27: tracks which connection's RemotePage is open, so a widget
+  // "connect" tap for the same connection is a no-op (see _AceAppState).
+  // Optional so existing tests keep constructing Home without it.
+  final ValueNotifier<String?>? openConnectionId;
   @override
   State<Home> createState() => _HomeState();
 }
@@ -174,6 +364,9 @@ class _HomeState extends State<Home> {
           _error = null;
         });
       }
+      // Step 27: the list changed (added/edited/favorited/deleted), so
+      // refresh the widget — it shows the same list's current connection.
+      unawaited(HomeWidgetSync.syncFromPrefs());
     } catch (_) {
       // Show the list area (empty) instead of spinning forever.
       if (mounted) {
@@ -186,15 +379,26 @@ class _HomeState extends State<Home> {
   }
 
   void _open(RdpConnection connection) {
-    Navigator.push(
-        context,
-        MaterialPageRoute<void>(
-            builder: (_) => RemotePage(
-                agent: widget.agent,
-                pollMs: widget.pollMs,
-                settings: widget.settings,
-                rdpMode: true,
-                rdpConnection: connection)));
+    // Step 27: this becomes the widget's current connection, and the
+    // open id is tracked so a widget tap for the same connection is a
+    // no-op instead of opening a second RDP session.
+    widget.openConnectionId?.value = connection.id;
+    unawaited(HomeWidgetSync.setCurrentId(connection.id));
+    unawaited(HomeWidgetSync.syncFromPrefs());
+    unawaited(Navigator.push(
+            context,
+            MaterialPageRoute<void>(
+                builder: (_) => RemotePage(
+                    agent: widget.agent,
+                    pollMs: widget.pollMs,
+                    settings: widget.settings,
+                    rdpMode: true,
+                    rdpConnection: connection)))
+        .then((_) {
+      if (widget.openConnectionId?.value == connection.id) {
+        widget.openConnectionId?.value = null;
+      }
+    }));
   }
 
   /// Add/edit page: name, host, port, username and password plus the
@@ -538,20 +742,63 @@ String clean(Object e) {
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage(
-      {super.key, required this.theme, required this.onThemeChanged});
+      {super.key,
+      required this.theme,
+      required this.onThemeChanged,
+      required this.widgetOpacity,
+      required this.onWidgetOpacityChanged});
   final ThemeMode theme;
   final Future<void> Function(ThemeMode mode) onThemeChanged;
+  // Step 27: widget background opacity 0 (fully transparent) .. 100.
+  final int widgetOpacity;
+  final Future<void> Function(int opacity) onWidgetOpacityChanged;
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
 
 class _SettingsPageState extends State<SettingsPage> {
   late ThemeMode mode = widget.theme;
+  // Step 27: local slider value (saved only when the drag ends, so the
+  // widget is not re-synced on every tick of the drag).
+  late int opacity = clampWidgetOpacity(widget.widgetOpacity);
+  bool _pinSupported = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkPinSupport();
+  }
+
+  /// Step 27: Android 8+ lets the app ask the launcher to pin the widget
+  /// (system confirmation dialog). Silently hidden when unsupported
+  /// (older Android, or no widget plugin — e.g. in tests).
+  Future<void> _checkPinSupport() async {
+    try {
+      final supported = await HomeWidget.isRequestPinWidgetSupported();
+      if (mounted) setState(() => _pinSupported = supported ?? false);
+    } catch (_) {}
+  }
 
   Future<void> _select(ThemeMode value) async {
     if (value == mode) return;
     setState(() => mode = value);
     await widget.onThemeChanged(value);
+  }
+
+  Future<void> _selectOpacity(int value) async {
+    final clamped = clampWidgetOpacity(value);
+    if (clamped == widget.widgetOpacity) return;
+    await widget.onWidgetOpacityChanged(clamped);
+  }
+
+  Future<void> _pinWidget() async {
+    try {
+      await HomeWidget.requestPinWidget(
+        qualifiedAndroidName: homeWidgetProviderQualifiedName,
+      );
+    } catch (_) {
+      // The system shows its own dialog/errors; nothing to do here.
+    }
   }
 
   @override
@@ -587,6 +834,56 @@ class _SettingsPageState extends State<SettingsPage> {
                         secondary: Icon(Icons.smartphone_outlined),
                         value: ThemeMode.system),
                   ]))),
+          const SizedBox(height: 16),
+          // Step 27: home-screen widget (4x2). It follows the theme above
+          // (Sáng/Tối/Theo điện thoại); only its background opacity is
+          // set here.
+          Text('Widget màn hình chính',
+              style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Card(
+              clipBehavior: Clip.antiAlias,
+              child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                            mainAxisAlignment:
+                                MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('Độ trong suốt của widget'),
+                              Text('$opacity%',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleMedium),
+                            ]),
+                        Slider(
+                            value: opacity.toDouble(),
+                            min: 0,
+                            max: 100,
+                            divisions: 100,
+                            label: '$opacity%',
+                            onChanged: (v) =>
+                                setState(() => opacity = v.round()),
+                            onChangeEnd: (v) =>
+                                unawaited(_selectOpacity(v.round()))),
+                        Text(
+                            '0% là trong suốt hoàn toàn, 100% là đục hoàn toàn. Widget theo chế độ Sáng/Tối ở trên.',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(
+                                    color: scheme.onSurfaceVariant)),
+                        if (_pinSupported) ...[
+                          const SizedBox(height: 8),
+                          FilledButton.tonalIcon(
+                              onPressed: () => unawaited(_pinWidget()),
+                              icon: const Icon(Icons.widgets_outlined),
+                              label: const Text(
+                                  'Thêm widget ra màn hình chính')),
+                        ],
+                      ]))),
           const SizedBox(height: 16),
           Text(
               'Cài đặt kết nối (địa chỉ, cổng, tài khoản) nằm trong màn hình sửa từng kết nối trên trang chính.',
@@ -1462,7 +1759,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                   widget.settings?.call() ??
                   SettingsPage(
                       theme: ThemeMode.system,
-                      onThemeChanged: (_) async {})));
+                      onThemeChanged: (_) async {},
+                      widgetOpacity: widgetOpacityDefault,
+                      onWidgetOpacityChanged: (_) async {})));
       if (mounted) {
         try {
           await agent.health();

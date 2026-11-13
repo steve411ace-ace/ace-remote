@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Step 27: widget layout 4x2. Only RemoteViews-supported views are used
+     (FrameLayout / LinearLayout / TextView / ImageView — no Compose, no
+     custom views). TextViews double as buttons: the provider attaches a
+     launch PendingIntent to each one (RemoteViews has no onClick).
+     The rounded background is NOT a shape drawable: RemoteViews cannot set
+     both a shape's color and its alpha, and setBackgroundColor would drop
+     the rounded corners. Instead the provider draws a rounded-rect bitmap
+     (solid color + alpha from the opacity setting) into widget_bg. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <ImageView
+        android:id="@+id/widget_bg"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="fitXY"
+        android:contentDescription="@null" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="10dp">
+
+        <!-- Info row: tap = open the app and connect to this connection. -->
+        <LinearLayout
+            android:id="@+id/widget_info"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/widget_name"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Ace Remote"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:maxLines="1"
+                    android:ellipsize="end" />
+
+                <TextView
+                    android:id="@+id/widget_address"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="100.101.127.41:3389"
+                    android:textColor="#B0BEC5"
+                    android:textSize="12sp"
+                    android:maxLines="1"
+                    android:ellipsize="end" />
+
+                <TextView
+                    android:id="@+id/widget_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Đã lưu • Chạm"
+                    android:textColor="#B0BEC5"
+                    android:textSize="11sp"
+                    android:maxLines="1"
+                    android:ellipsize="end" />
+            </LinearLayout>
+
+            <!-- Switch connection: only visible when > 1 connection is saved. -->
+            <TextView
+                android:id="@+id/widget_next"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="8dp"
+                android:gravity="center"
+                android:text="⇄"
+                android:textColor="#FFFFFF"
+                android:textSize="20sp"
+                android:background="@drawable/widget_pill_off_dark"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- Quick-action row: Trackpad / Bàn phím toggles + Kết nối. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/widget_btn_trackpad"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:gravity="center"
+                android:text="Trackpad"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:background="@drawable/widget_pill_off_dark" />
+
+            <TextView
+                android:id="@+id/widget_btn_keyboard"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:gravity="center"
+                android:text="Bàn phím"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:background="@drawable/widget_pill_off_dark" />
+
+            <TextView
+                android:id="@+id/widget_btn_connect"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text="Kết nối"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:background="@drawable/widget_pill_on" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>
