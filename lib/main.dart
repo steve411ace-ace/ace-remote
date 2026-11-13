@@ -146,21 +146,12 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
             localizedReason: 'Mở khóa Ace Remote',
             authMessages: const [
               AndroidAuthMessages(
-                biometricHint: 'Xác minh vân tay',
-                biometricNotRecognized: 'Chưa nhận diện. Thử lại.',
-                biometricRequiredTitle: 'Cần đăng ký vân tay',
-                biometricSuccess: 'Đã xác minh',
+                signInHint: 'Xác minh vân tay',
                 cancelButton: 'Hủy',
                 signInTitle: 'Mở khóa phiên',
-                goToSettingsButton: 'Mở cài đặt',
-                goToSettingsDescription:
-                    'Đăng ký vân tay trong cài đặt điện thoại.',
-                deviceCredentialsRequiredTitle: 'Cần khóa điện thoại',
-                deviceCredentialsSetupDescription:
-                    'Thiết lập khóa trong cài đặt điện thoại.',
               )
             ],
-            options: const AuthenticationOptions(biometricOnly: true));
+            biometricOnly: true);
       } else {
         if (!RegExp(r'^\d{4,6}$').hasMatch(pin.text)) {
           throw Exception('PIN phải gồm 4–6 chữ số.');
@@ -201,7 +192,7 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => error = e is PlatformException
+        setState(() => error = e is PlatformException || e is LocalAuthException
             ? 'Vân tay chưa sẵn sàng. Hãy dùng PIN.'
             : e.toString().replaceFirst('Exception: ', ''));
       }
