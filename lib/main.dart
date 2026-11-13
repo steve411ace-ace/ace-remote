@@ -10,6 +10,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:local_auth_android/local_auth_android.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'agent.dart';
+import 'rdp_input.dart';
 import 'rdp_surface.dart';
 
 void main() {
@@ -582,6 +583,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   String? error;
   bool controlsHealthy = true;
   Offset cursor = Offset.zero;
+  final rdpController = RdpController();
+  Future<void> rdpQueue = Future.value();
   final Set<String> modifiers = {};
   Future<void> queue = Future.value();
   int pending = 0;
@@ -810,6 +813,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     frame?.dispose();
     transform.dispose();
+    rdpController.dispose();
     super.dispose();
   }
 
@@ -860,6 +864,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       builder: (context, box) => KeyboardSurface(
             keyAt: child == null ? null : keyAt,
             onMove: (delta) {
+              if (widget.rdpMode) return;
               final d = display;
               final size = d == null
                   ? agent.virtualSize
@@ -886,9 +891,16 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                     }
                     if (mounted) setState(() => pressedLabel = label);
                   },
-            onClick: click,
-            onScroll: (dy) => send('/scroll', {'delta': (-dy * 3).round()}),
+            onClick: (button) {
+              if (!widget.rdpMode) click(button);
+            },
+            onScroll: (dy) {
+              if (!widget.rdpMode) {
+                send('/scroll', {'delta': (-dy * 3).round()});
+              }
+            },
             onDrag: (down) {
+              if (widget.rdpMode) return;
               if (!agent.capabilities.contains('mouse_drag')) {
                 if (down) {
                   notice('Agent không có mouse_drag (down/up).');
@@ -916,10 +928,56 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     return null;
   }
 
+  void rdpKey(String key) {
+    if (!rdpController.isConnected) return;
+    if (key == 'Caps') key = 'Shift';
+    final vk = rdpVirtualKey(key);
+    if (vk == null) return;
+    if (const ['Win', 'Ctrl', 'Alt', 'Shift'].contains(key)) {
+      final wasArmed = modifiers.contains(key);
+      setState(() {
+        wasArmed ? modifiers.remove(key) : modifiers.add(key);
+      });
+      if (key != 'Win' || !wasArmed) return;
+      rdpQueue = rdpQueue.then((_) async {
+        await rdpController.sendKey(vk, true);
+        await rdpController.sendKey(vk, false);
+      });
+      return;
+    }
+    final armed = [
+      for (final m in ['Win', 'Ctrl', 'Alt', 'Shift'])
+        if (modifiers.contains(m)) rdpVirtualKey(m)!
+    ];
+    setState(() => modifiers.clear());
+    rdpQueue = rdpQueue.then((_) async {
+      for (final m in armed) {
+        await rdpController.sendKey(m, true);
+      }
+      await rdpController.sendKey(vk, true);
+      await rdpController.sendKey(vk, false);
+      for (final m in armed.reversed) {
+        await rdpController.sendKey(m, false);
+      }
+    });
+  }
+
   Widget laptopKey(String label,
       {double units = 1, String? command, bool modifier = false}) {
     final selected = modifier && modifiers.contains(command ?? label);
     void press() {
+      if (widget.rdpMode) {
+        if (label == 'Click trái' || label == 'Click phải') {
+          if (rdpController.isConnected) {
+            setState(() => modifiers.clear());
+            unawaited(rdpController
+                .clickAtLastPosition(label == 'Click trái' ? 'left' : 'right'));
+          }
+        } else {
+          rdpKey(command ?? label);
+        }
+        return;
+      }
       if (label == 'Click trái' || label == 'Click phải') {
         setState(() => modifiers.clear());
         click(label == 'Click trái' ? 'left' : 'right');
@@ -1115,14 +1173,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         body: LayoutBuilder(builder: (context, box) {
           if (widget.rdpMode) {
             return Column(children: [
-              const Expanded(
+              Expanded(
                   child: SizedBox(
-                      key: ValueKey('remote-half'), child: RdpSurface())),
+                      key: const ValueKey('remote-half'),
+                      child: RdpConnectionPane(controller: rdpController))),
               Expanded(
                   child: SizedBox(
                       key: const ValueKey('keyboard-half'),
-                      child:
-                          AbsorbPointer(child: laptopDeck(keyboardPanel())))),
+                      child: laptopDeck(keyboardPanel()))),
             ]);
           }
           final d = display;

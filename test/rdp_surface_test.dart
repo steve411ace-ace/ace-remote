@@ -1,10 +1,99 @@
 import 'package:ace_remote/agent.dart';
 import 'package:ace_remote/main.dart';
+import 'package:ace_remote/rdp_surface.dart';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/testing.dart';
 
 void main() {
+  testWidgets('RDP keyboard sends VK chords and never HTTP', (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/0');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    var requests = 0;
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          requests++;
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.sendKey(0x41, true); // Unattached controller is a no-op.
+    await controller.sendCursor(1, 2, 0x800);
+    await controller.clickAtLastPosition('left');
+    await controller.attach(0);
+    await messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('state', {'state': 'connected'})),
+        (_) {});
+    await tester.pump();
+    Future<void> tap(String label) async {
+      await tester.tap(find.text(label).first);
+      await tester.pumpAndSettle();
+    }
+
+    for (final label in ['A', 'Enter', 'Esc', 'Ctrl', 'C']) {
+      await tap(label);
+    }
+    expect(calls.map((c) => c.method), everyElement('key'));
+    expect(calls.map((c) => c.arguments).toList(), [
+      {'vk': 0x41, 'down': true},
+      {'vk': 0x41, 'down': false},
+      {'vk': 0x0d, 'down': true},
+      {'vk': 0x0d, 'down': false},
+      {'vk': 0x1b, 'down': true},
+      {'vk': 0x1b, 'down': false},
+      {'vk': 0xa2, 'down': true},
+      {'vk': 0x43, 'down': true},
+      {'vk': 0x43, 'down': false},
+      {'vk': 0xa2, 'down': false},
+    ]);
+    calls.clear();
+    await tap('Win');
+    expect(calls, isEmpty);
+    await tap('Win');
+    expect(calls.map((c) => c.arguments).toList(), [
+      {'vk': 0x15b, 'down': true},
+      {'vk': 0x15b, 'down': false},
+    ]);
+    calls.clear();
+    await tap('Click phải');
+    expect(calls.single.method, 'click');
+    expect(calls.single.arguments, {'button': 'right'});
+    expect(requests, 0);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('RDP status preserves native physical pixels across resize', (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/15');
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    var pixels = <String, dynamic>{'state': 'idle', 'widthPx': 1600, 'heightPx': 600};
+    messenger.setMockMethodCallHandler(channel, (call) async => pixels);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final controller = RdpController();
+    addTearDown(controller.dispose);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await controller.attach(15);
+    expect(controller.value['widthPx'], 1600);
+    expect(controller.value['heightPx'], 600);
+    pixels = {'state': 'connected', 'widthPx': 1200, 'heightPx': 800};
+    expect(await controller.status(), pixels);
+  });
+
   testWidgets('RDP waiting page keeps equal halves and sends no agent traffic',
       (tester) async {
     var requests = 0;
@@ -36,4 +125,57 @@ void main() {
     }
     await tester.pumpWidget(const SizedBox());
   });
+  testWidgets('RDP form sends credentials and follows native lifecycle', (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/0');
+    final calls = <MethodCall>[];
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return call.method == 'status' ? {'state': 'idle'} : null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller = tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(0);
+    await tester.pump();
+    expect(find.text('Kết nối'), findsOneWidget);
+    expect(tester.widget<TextField>(find.byKey(const ValueKey('rdp-host'))).controller!.text, '100.101.127.41');
+    await tester.enterText(find.byKey(const ValueKey('rdp-host')), 'rdp.example');
+    await tester.enterText(find.byKey(const ValueKey('rdp-username')), 'test-user');
+    await tester.enterText(find.byKey(const ValueKey('rdp-password')), 'test-secret');
+    await tester.ensureVisible(find.text('Kết nối'));
+    await tester.tap(find.text('Kết nối'));
+    await tester.pump();
+    expect(calls.last.method, 'connect');
+    expect(calls.last.arguments, {'host': 'rdp.example', 'port': 3389, 'username': 'test-user', 'password': 'test-secret'});
+    expect(tester.widget<TextField>(find.byKey(const ValueKey('rdp-password'))).controller!.text, isEmpty);
+    Future<void> event(Map<String, dynamic> state) async {
+      await messenger.handlePlatformMessage(channel.name, const StandardMethodCodec().encodeMethodCall(MethodCall('state', state)), (_) {});
+      await tester.pump();
+    }
+    await event({'state': 'connecting'});
+    expect(find.text('Đang kết nối…'), findsOneWidget);
+    await tester.tap(find.text('Ngắt'));
+    await tester.pump();
+    expect(calls.last.method, 'disconnect');
+    await event({'state': 'disconnecting'});
+    expect(find.text('Đang ngắt kết nối…'), findsOneWidget);
+    await event({'state': 'connected'});
+    expect(find.text('Đã kết nối'), findsOneWidget);
+    expect(find.byKey(const ValueKey('rdp-password')), findsNothing);
+    await tester.tap(find.text('Ngắt kết nối'));
+    await tester.pump();
+    expect(calls.last.method, 'disconnect');
+    await event({'state': 'failed', 'error': 'Test failure', 'authAttempted': true});
+    expect(find.text('Test failure'), findsOneWidget);
+    expect(find.text('Kết nối lại'), findsOneWidget);
+    expect(find.text('Đã đi qua callback xác thực; chưa xác định nguyên nhân.'), findsOneWidget);
+    expect(tester.widget<TextField>(find.byKey(const ValueKey('rdp-password'))).controller!.text, isEmpty);
+    await event({'state': 'failed', 'authAttempted': false});
+    expect(find.text('Chưa đi qua callback xác thực; chưa xác định nguyên nhân.'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
 }
