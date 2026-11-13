@@ -2,11 +2,82 @@ import 'package:ace_remote/agent.dart';
 import 'package:ace_remote/main.dart';
 import 'package:ace_remote/rdp_surface.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:ace_remote/rdp_credentials.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/testing.dart';
 
 void main() {
+  setUp(() => FlutterSecureStorage.setMockInitialValues({}));
+
+  testWidgets('saved password restores obscured and forget deletes it', (tester) async {
+    FlutterSecureStorage.setMockInitialValues({rdpPasswordKey: 'saved-secret'});
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: RdpConnectionPane())));
+    await tester.pumpAndSettle();
+    final field = tester.widget<TextField>(find.byKey(const ValueKey('rdp-password')));
+    expect(field.obscureText, isTrue);
+    expect(field.controller!.text, 'saved-secret');
+    await tester.ensureVisible(find.text('Quên mật khẩu'));
+    await tester.tap(find.text('Quên mật khẩu'));
+    await tester.pumpAndSettle();
+    expect(field.controller!.text, isEmpty);
+    expect(await storage.read(key: rdpPasswordKey, aOptions: rdpStorageOptions), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('password saved only after native connection success', (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/19');
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async => call.method == 'status' ? {'state': 'idle'} : null);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final controller = RdpController();
+    await controller.attach(19);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: RdpConnectionPane(controller: controller))));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('rdp-username')), 'user');
+    await tester.enterText(find.byKey(const ValueKey('rdp-password')), 'success-secret');
+    await tester.ensureVisible(find.text('Kết nối'));
+    await tester.tap(find.text('Kết nối'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(await storage.read(key: rdpPasswordKey, aOptions: rdpStorageOptions), isNull);
+    controller.value = {'state': 'connected'};
+    await tester.pumpAndSettle();
+    expect(await storage.read(key: rdpPasswordKey, aOptions: rdpStorageOptions), 'success-secret');
+    controller.value = {'state': 'connected', 'resizeFailure': 'DISP unavailable'};
+    await tester.pump();
+    expect(find.text('Đã kết nối'), findsOneWidget);
+    expect(find.text('Kết nối lại'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
+
+  testWidgets('password refills from storage after disconnect', (tester) async {
+    FlutterSecureStorage.setMockInitialValues({rdpPasswordKey: 'saved-secret'});
+    const channel = MethodChannel('vn.aceremote.app/rdp/21');
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async => call.method == 'status' ? {'state': 'idle'} : null);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final controller = RdpController();
+    await controller.attach(21);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: RdpConnectionPane(controller: controller))));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byKey(const ValueKey('rdp-password'))).controller!.text, 'saved-secret');
+    await tester.enterText(find.byKey(const ValueKey('rdp-username')), 'user');
+    await tester.ensureVisible(find.text('Kết nối'));
+    await tester.tap(find.text('Kết nối'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    controller.value = {'state': 'connected'};
+    await tester.pumpAndSettle();
+    controller.value = {'state': 'disconnected'};
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byKey(const ValueKey('rdp-password'))).controller!.text, 'saved-secret');
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
+
   testWidgets('RDP keyboard sends VK chords and never HTTP', (tester) async {
     const channel = MethodChannel('vn.aceremote.app/rdp/0');
     final messenger =
@@ -70,9 +141,9 @@ void main() {
       {'vk': 0x15b, 'down': false},
     ]);
     calls.clear();
-    await tap('Click phải');
-    expect(calls.single.method, 'click');
-    expect(calls.single.arguments, {'button': 'right'});
+    expect(find.text('Click trái'), findsNothing);
+    expect(find.text('Click phải'), findsNothing);
+    expect(find.byKey(const ValueKey('keyboard-row-6')), findsNothing);
     expect(requests, 0);
     await tester.pumpWidget(const SizedBox());
   });
@@ -148,6 +219,10 @@ void main() {
     await tester.ensureVisible(find.text('Kết nối'));
     await tester.tap(find.text('Kết nối'));
     await tester.pump();
+    expect(calls.where((call) => call.method == 'connect'), isEmpty);
+    await tester.pump(const Duration(milliseconds: 399));
+    expect(calls.where((call) => call.method == 'connect'), isEmpty);
+    await tester.pump(const Duration(milliseconds: 1));
     expect(calls.last.method, 'connect');
     expect(calls.last.arguments, {'host': 'rdp.example', 'port': 3389, 'username': 'test-user', 'password': 'test-secret'});
     expect(tester.widget<TextField>(find.byKey(const ValueKey('rdp-password'))).controller!.text, isEmpty);

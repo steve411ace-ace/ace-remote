@@ -6,6 +6,8 @@ import android.graphics.Color
 import android.graphics.RectF
 import android.graphics.drawable.BitmapDrawable
 import android.os.Handler
+import android.os.SystemClock
+import android.util.Log
 import android.os.Looper
 import android.view.MotionEvent
 import android.view.SurfaceHolder
@@ -105,6 +107,10 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
     private var scrollMode = false
     private var scrollY = 0f
     private var scrollAccum = 0f
+    private var twoFingerTravel = 0f
+    private var twoFingerX = 0f
+    private var twoFingerY = 0f
+    private var twoFingerTap = false
     private val longPress = Runnable { synchronized(lock) {
         val a = touchOwner
         if (a != null && inputAttempt() === a && surfaceReady && !leftHeld && !scrollMode) {
@@ -154,7 +160,7 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         main.removeCallbacks(longPress)
         if (release && leftHeld) touchOwner?.let { cursorInput(it, lastX, lastY, PTRFLAGS_LBUTTON) }
         touchOwner = null; leftHeld = false; rightHandled = false
-        scrollMode = false; scrollAccum = 0f
+        scrollMode = false; scrollAccum = 0f; twoFingerTap = false; twoFingerTravel = 0f
         lastMovePending = null
     }
     private fun onTouch(event: MotionEvent): Boolean = synchronized(lock) {
@@ -170,8 +176,18 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         if (x < 0 || y < 0 || x >= bitmapWidth || y >= bitmapHeight) {
             // Letterbox is not a framebuffer point: swallow without sending.
             // Cancel the timer so a long press cannot fire while outside.
-            main.removeCallbacks(longPress)
+            resetTouch()
             return@synchronized true
+        }
+        if (event.pointerCount >= 2) {
+            for (i in 0 until event.pointerCount) {
+                val px = (event.getX(i) - (widthPx - bitmapWidth * scale) / 2) / scale
+                val py = (event.getY(i) - (heightPx - bitmapHeight * scale) / 2) / scale
+                if (px < 0 || py < 0 || px >= bitmapWidth || py >= bitmapHeight) {
+                    resetTouch()
+                    return@synchronized true
+                }
+            }
         }
         lastX = x.toInt(); lastY = y.toInt(); touched = true
         when (event.actionMasked) {
@@ -185,7 +201,10 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                 if (touchOwner === a && event.pointerCount >= 2) {
                     main.removeCallbacks(longPress)
                     if (leftHeld) cursorInput(a, lastX, lastY, PTRFLAGS_LBUTTON)
+                    twoFingerTap = !scrollMode && !leftHeld && !rightHandled && event.pointerCount == 2
                     leftHeld = false; scrollMode = true
+                    twoFingerX = (event.getX(0) + event.getX(1)) / 2
+                    twoFingerY = (event.getY(0) + event.getY(1)) / 2
                     scrollY = (event.getY(0) + event.getY(1)) / 2; scrollAccum = 0f
                 }
             }
@@ -193,6 +212,9 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                 if (scrollMode) {
                     if (event.pointerCount >= 2) {
                         val centerY = (event.getY(0) + event.getY(1)) / 2
+                        val centerX = (event.getX(0) + event.getX(1)) / 2
+                        twoFingerTravel += kotlin.math.hypot(centerX - twoFingerX, centerY - twoFingerY)
+                        twoFingerX = centerX; twoFingerY = centerY
                         scrollAccum += centerY - scrollY; scrollY = centerY
                         while (kotlin.math.abs(scrollAccum) >= 48f) {
                             val down = scrollAccum > 0
@@ -227,7 +249,23 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
             }
             MotionEvent.ACTION_CANCEL -> resetTouch()
             // Stay in scroll mode until ACTION_UP, including the one-finger tail.
-            MotionEvent.ACTION_POINTER_UP -> main.removeCallbacks(longPress)
+            MotionEvent.ACTION_POINTER_UP -> {
+                main.removeCallbacks(longPress)
+                if (touchOwner === a && twoFingerTap && event.pointerCount == 2) {
+                    val centerX = (event.getX(0) + event.getX(1)) / 2
+                    val centerY = (event.getY(0) + event.getY(1)) / 2
+                    twoFingerTravel += kotlin.math.hypot(centerX - twoFingerX, centerY - twoFingerY)
+                    val midX = (centerX - (widthPx - bitmapWidth * scale) / 2) / scale
+                    val midY = (centerY - (heightPx - bitmapHeight * scale) / 2) / scale
+                    if (event.eventTime - downTime < 500 && twoFingerTravel < 48f &&
+                        kotlin.math.abs(scrollAccum) < 48f && midX >= 0 && midY >= 0 &&
+                        midX < bitmapWidth && midY < bitmapHeight) {
+                        lastX = midX.toInt(); lastY = midY.toInt()
+                        clickAt(a, PTRFLAGS_RBUTTON)
+                    }
+                }
+                twoFingerTap = false
+            }
         }
         true
     }
@@ -292,7 +330,8 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
     }
     private fun snapshot() = mapOf("connected" to (state == "connected"), "h264" to h264,
         "loadError" to loadError, "widthPx" to widthPx, "heightPx" to heightPx,
-        "state" to state, "error" to error, "authAttempted" to authAttempted)
+        "state" to state, "error" to error, "authAttempted" to authAttempted,
+        "resizeFailure" to resizeFailure)
     // Shared state and framebuffer copies use lock; Canvas access runs outside it.
     private fun change(value: String, reason: String? = null) {
         state = value; error = reason
@@ -373,6 +412,7 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         var stopping = false
         var connected = false
         var terminal = false
+        private var connectedAt = 0L
         private var requestedWidth = 1024
         private var requestedHeight = 768
         // Called with lock held; native calls remain serialized with start/teardown.
@@ -380,6 +420,11 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
             if (!valid() || !connected || !surfaceReady || generation != resizeGeneration ||
                 widthPx !in 1..65536 || heightPx !in 1..65536 ||
                 (widthPx == requestedWidth && heightPx == requestedHeight)) return
+            val remaining = 2000 - (SystemClock.uptimeMillis() - connectedAt)
+            if (remaining > 0) {
+                main.postDelayed({ synchronized(lock) { resize(generation, retry) } }, remaining)
+                return
+            }
             val w = widthPx; val h = heightPx
             executor.execute { synchronized(lock) {
                 if (!valid() || !connected || !surfaceReady || generation != resizeGeneration) return@synchronized
@@ -392,16 +437,17 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                         if (valid() && surfaceReady && generation == resizeGeneration &&
                             (bitmap?.width != w || bitmap?.height != h)) resizeUnavailable()
                     } }, 3000)
-                } else if (retry < 9) {
-                    main.postDelayed({ synchronized(lock) { resize(generation, retry + 1) } }, 500)
+                } else if (retry < 2) {
+                    main.postDelayed({ synchronized(lock) { resize(generation, retry + 1) } }, 1000)
                 } else {
                     resizeUnavailable()
                 }
             } }
         }
         private fun resizeUnavailable() {
-            resizeFailure = "Không đổi được độ phân giải qua DISP. Nhập lại mật khẩu và kết nối lại để dùng kích thước mới."
-            stop()
+            resizeFailure = "DISP không đổi được độ phân giải; tiếp tục dùng kích thước hiện tại."
+            Log.w("AceRdp", resizeFailure.orEmpty())
+            change(state, error)
         }
         private fun valid() = !disposed && !stopping && !terminal && attempt === this && handle != 0L
         fun clearCredentials() { password = null; username = null; bookmark?.setPassword("") }
@@ -442,8 +488,8 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                     session = null; bookmark = null
                     if (attempt === this) {
                         attempt = null; bitmap = null; draw()
-                        if (!disposed) change(if (resizeFailure != null) "failed" else if (stopping) "disconnected" else value,
-                            resizeFailure ?: if (stopping) null else reason)
+                        if (!disposed) change(if (stopping) "disconnected" else value,
+                            if (stopping) null else reason)
                     }
                     if (disposed) executor.shutdown()
                 }
@@ -452,7 +498,7 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         override fun OnPreConnect(instance: Long) = synchronized(lock) { if (valid() && instance == handle) change("connecting") }
         override fun OnConnectionSuccess(instance: Long) = synchronized(lock) {
             if (instance != handle || terminal || attempt !== this) return@synchronized
-            connected = true; clearCredentials()
+            connected = true; connectedAt = SystemClock.uptimeMillis(); clearCredentials()
             if (disposed || stopping) executor.execute { synchronized(lock) {
                 if (!terminal && attempt === this) LibFreeRDP.disconnect(instance)
             } }

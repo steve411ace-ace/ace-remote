@@ -5,7 +5,7 @@ import 'dart:ui' as ui;
 import 'package:crypto/crypto.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'rdp_credentials.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:local_auth_android/local_auth_android.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -29,7 +29,6 @@ class AceApp extends StatefulWidget {
 }
 
 class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
-  final storage = const FlutterSecureStorage();
   final auth = LocalAuthentication();
   final pin = TextEditingController();
   final confirmPin = TextEditingController();
@@ -967,15 +966,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     final selected = modifier && modifiers.contains(command ?? label);
     void press() {
       if (widget.rdpMode) {
-        if (label == 'Click trái' || label == 'Click phải') {
-          if (rdpController.isConnected) {
-            setState(() => modifiers.clear());
-            unawaited(rdpController
-                .clickAtLastPosition(label == 'Click trái' ? 'left' : 'right'));
-          }
-        } else {
-          rdpKey(command ?? label);
-        }
+        rdpKey(command ?? label);
         return;
       }
       if (label == 'Click trái' || label == 'Click phải') {
@@ -1089,8 +1080,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                 }.entries)
                   laptopKey(e.key, command: e.value),
               ]),
-              row(6, [laptopKey('Click trái'), laptopKey('Click phải')],
-                  flex: 2),
+              if (!widget.rdpMode)
+                row(6, [laptopKey('Click trái'), laptopKey('Click phải')],
+                    flex: 2),
             ])));
       });
 

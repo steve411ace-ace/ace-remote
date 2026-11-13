@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'rdp_credentials.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
@@ -79,7 +81,7 @@ class _RdpSurfaceState extends State<RdpSurface> {
   }
 }
 
-/// Owns credentials only while the RDP login form is mounted.
+/// Restores credentials from secure storage and saves only after native success.
 class RdpConnectionPane extends StatefulWidget {
   const RdpConnectionPane({super.key, this.controller});
   final RdpController? controller;
@@ -95,8 +97,59 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
   final password = TextEditingController();
   bool submitting = false;
   String? localError;
+  String? pendingPassword;
+  bool passwordEdited = false;
+  Future<void> storageQueue = Future<void>.value();
+
+  @override
+  void initState() {
+    super.initState();
+    controller.addListener(connectionChanged);
+    unawaited(restorePassword());
+  }
+
+  Future<void> restorePassword() async {
+    try {
+      final saved = await storage.read(key: rdpPasswordKey, aOptions: rdpStorageOptions);
+      if (mounted && !passwordEdited && !submitting) password.text = saved ?? '';
+    } on PlatformException {
+      if (mounted) setState(() => localError = 'Không đọc được mật khẩu đã lưu.');
+    }
+  }
+
+  void connectionChanged() {
+    if (controller.isConnected && pendingPassword != null) {
+      final secret = pendingPassword!;
+      pendingPassword = null;
+      queueStorage(() => storage.write(key: rdpPasswordKey, value: secret, aOptions: rdpStorageOptions));
+    } else if (['failed', 'disconnected', 'disconnecting'].contains(controller.value['state'])) {
+      pendingPassword = null;
+      if (controller.value['state'] == 'failed' || controller.value['state'] == 'disconnected') {
+        // Login form is visible again: refill the saved password so the user
+        // does not have to retype it to reconnect. restorePassword() still
+        // respects passwordEdited (set by onChanged) if the user types first.
+        passwordEdited = false;
+        unawaited(restorePassword());
+      }
+    }
+  }
+
+  void queueStorage(Future<void> Function() action) {
+    storageQueue = storageQueue.then((_) => action()).catchError((Object error) {
+      if (mounted) setState(() => localError = 'Không cập nhật được mật khẩu đã lưu.');
+    });
+  }
+
+  void forgetPassword() {
+    passwordEdited = true;
+    pendingPassword = null;
+    password.clear();
+    queueStorage(() => storage.delete(key: rdpPasswordKey, aOptions: rdpStorageOptions));
+  }
   @override
   void dispose() {
+    controller.removeListener(connectionChanged);
+    pendingPassword = null;
     password.clear();
     for (final field in [host, port, username, password]) { field.dispose(); }
     if (widget.controller == null) controller.dispose();
@@ -109,9 +162,15 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
       return;
     }
     setState(() { submitting = true; localError = null; });
+    FocusScope.of(context).unfocus();
+    passwordEdited = true;
     try {
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      if (!mounted) return;
+      pendingPassword = password.text;
       await controller.connect(host.text.trim(), number, username.text.trim(), password.text);
     } on PlatformException {
+      pendingPassword = null;
       if (mounted) setState(() => localError = 'Không gửi được yêu cầu kết nối. Hãy thử lại.');
     } finally {
       if (mounted) {
@@ -121,6 +180,7 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
     }
   }
   Future<void> disconnect() async {
+    pendingPassword = null;
     password.clear();
     try { await controller.disconnect(); }
     on PlatformException {
@@ -160,7 +220,8 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
                   TextField(key: const ValueKey('rdp-host'), controller: host, decoration: const InputDecoration(labelText: 'Host')),
                   TextField(key: const ValueKey('rdp-port'), controller: port, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Port')),
                   TextField(key: const ValueKey('rdp-username'), controller: username, autocorrect: false, decoration: const InputDecoration(labelText: 'Username')),
-                  TextField(key: const ValueKey('rdp-password'), controller: password, obscureText: true, autocorrect: false, enableSuggestions: false, decoration: const InputDecoration(labelText: 'Password')),
+                  TextField(key: const ValueKey('rdp-password'), controller: password, onChanged: (_) => passwordEdited = true, obscureText: true, autocorrect: false, enableSuggestions: false, decoration: const InputDecoration(labelText: 'Password')),
+                  TextButton(onPressed: forgetPassword, child: const Text('Quên mật khẩu')),
                   FilledButton(onPressed: connect, child: Text(state == 'failed' ? 'Kết nối lại' : 'Kết nối')),
                 ],
               ]))))));
