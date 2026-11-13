@@ -7,8 +7,9 @@ plugins {
 
 android {
     namespace = "vn.aceremote.app"
-    compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    compileSdk = 37
+    ndkVersion = "29.0.14206865"
+    buildToolsVersion = "37.0.0"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
@@ -21,7 +22,7 @@ android {
 
     defaultConfig {
         applicationId = "vn.aceremote.app"
-        minSdk = 23
+        minSdk = 29
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -40,4 +41,19 @@ android {
 
 flutter {
     source = "../.."
+}
+
+// A file AAR carries no Maven POM. Mirror FreeRDP 3.33.0 runtime dependencies.
+// Room's annotation processor runs upstream when compiling the AAR, not here.
+dependencies {
+    implementation files('libs/freeRDPCore-qa.aar')
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'androidx.core:core:1.19.0'
+    implementation 'androidx.preference:preference:1.2.1'
+    implementation 'androidx.recyclerview:recyclerview:1.4.0'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel:2.11.0'
+    implementation 'androidx.lifecycle:lifecycle-livedata:2.11.0'
+    implementation 'androidx.room:room-runtime:2.8.4'
+    implementation 'net.zetetic:sqlcipher-android:4.17.0@aar'
+    implementation 'androidx.sqlite:sqlite:2.7.0'
 }

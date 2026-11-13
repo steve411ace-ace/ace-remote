@@ -1,0 +1,109 @@
+name: Build RDP prototype AAR and APK
+
+on:
+  push:
+    branches: [rdp-prototype]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rdp-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.50.0'
+          channel: stable
+      - uses: android-actions/setup-android@v3
+      - name: Install SDK 37, Build Tools 37.0.0, CMake 4.1.2 and NDK r29
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager 'platforms;android-37' 'build-tools;37.0.0' 'cmake;4.1.2'
+          curl -fL --retry 3 https://dl.google.com/android/repository/android-ndk-r29-linux.zip -o "$RUNNER_TEMP/ndk.zip"
+          echo "4abbbcdc842f3d4879206e9695d52709603e52dd68d3c1fff04b3b5e7a308ecf  $RUNNER_TEMP/ndk.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP/ndk"
+          grep -Eq '^Pkg.Revision *= *29.0.14206865$' "$RUNNER_TEMP/ndk/android-ndk-r29/source.properties"
+          mkdir -p "$ANDROID_HOME/ndk"
+          rm -rf "$ANDROID_HOME/ndk/29.0.14206865"
+          mv "$RUNNER_TEMP/ndk/android-ndk-r29" "$ANDROID_HOME/ndk/29.0.14206865"
+          rm "$RUNNER_TEMP/ndk.zip"
+      - name: Clone and verify FreeRDP 3.33.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.33.0 https://github.com/FreeRDP/FreeRDP.git "$RUNNER_TEMP/FreeRDP"
+          test "$(git -C "$RUNNER_TEMP/FreeRDP" rev-parse HEAD)" = 5a10d7b6b79a2fbc62e8eba77085cd356dc303a6
+      - name: Build QA arm64 AAR (upstream AGP 9.2.1, Gradle 9.6.1)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/FreeRDP/client/Android/Studio"
+          cat > release.properties <<'PROPERTIES'
+          ABI_FILTERS=arm64-v8a
+          SPLIT_ARCHITECTURES=arm64-v8a
+          SPLIT_ENABLED=false
+          COMPILE_API=37
+          TARGET_API=37
+          MIN_API=29
+          TOOLS_VERSION=37.0.0
+          NDK_VERSION=29.0.14206865
+          CMAKE_VERSION=4.1.2
+          CMAKE_ARGUMENTS=-DWITH_FFMPEG=OFF;-DWITH_OPENH264=OFF;-DWITH_OPUS=OFF;-DWITH_WEBP=OFF;-DWITH_JPEG=OFF;-DWITH_PNG=OFF;-DWITH_CJSON=ON;-DWITH_OPENSSL=ON
+          VERSION_NAME=3.33.0
+          VERSION_CODE=333000
+          PROPERTIES
+          # Explicit version overrides avoid version-code calculation from shallow history.
+          printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :freeRDPCore:assembleQa
+          mkdir -p "$GITHUB_WORKSPACE/android/app/libs"
+          cp freeRDPCore/build/outputs/aar/freeRDPCore-qa.aar "$GITHUB_WORKSPACE/android/app/libs/"
+          python3 - <<'PY'
+          import os, zipfile
+          aar = os.environ['GITHUB_WORKSPACE'] + '/android/app/libs/freeRDPCore-qa.aar'
+          with zipfile.ZipFile(aar) as z:
+              libs = [n for n in z.namelist() if n.startswith('jni/') and n.endswith('.so')]
+              assert libs, 'AAR has no native libraries'
+              assert {n.split('/')[1] for n in libs} == {'arm64-v8a'}, libs
+              assert 'jni/arm64-v8a/libfreerdp-android.so' in libs, libs
+              print('\n'.join(libs))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: freerdp-3.33.0-qa-arm64
+          path: android/app/libs/freeRDPCore-qa.aar
+          if-no-files-found: error
+      - run: flutter pub get
+      - name: Restore launchers and icons without replacing pinned wrapper properties
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter create --template=app --org vn.aceremote --project-name ace_remote "$RUNNER_TEMP/flutter-template"
+          cp "$RUNNER_TEMP/flutter-template/android/gradle/wrapper/gradle-wrapper.jar" android/gradle/wrapper/
+          cp "$RUNNER_TEMP/flutter-template/android/gradlew" android/
+          cp "$RUNNER_TEMP/flutter-template/android/gradlew.bat" android/
+          cp -r "$RUNNER_TEMP/flutter-template/android/app/src/main/res/"mipmap-* android/app/src/main/res/
+          chmod +x android/gradlew
+          grep -F 'gradle-9.5.0-all.zip' android/gradle/wrapper/gradle-wrapper.properties
+      # App: AGP 9.3.1, Gradle 9.5.0, KGP 2.4.20, minSdk 29.
+      # Raw AAR runtime dependencies are explicitly mirrored in app/build.gradle.
+      - name: Build waiting-surface APK (arm64 only)
+        run: flutter build apk --release --target-platform android-arm64 --dart-define=ACE_RDP=true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ace-remote-rdp-arm64
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error

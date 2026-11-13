@@ -3,14 +3,14 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:crypto/crypto.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:local_auth_android/local_auth_android.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'agent.dart';
+import 'rdp_surface.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,6 +18,7 @@ void main() {
 }
 
 const mockMode = bool.fromEnvironment('ACE_MOCK');
+const rdpPrototype = bool.fromEnvironment('ACE_RDP');
 
 class AceApp extends StatefulWidget {
   const AceApp({super.key, this.now = DateTime.now});
@@ -512,7 +513,7 @@ class _SettingsPageState extends State<SettingsPage> {
             child: const Text('Kiểm tra kết nối')),
         Text(message),
         DropdownButtonFormField<ThemeMode>(
-            value: mode,
+            initialValue: mode,
             decoration: const InputDecoration(labelText: 'Giao diện'),
             items: const [
               DropdownMenuItem(
@@ -522,7 +523,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
             onChanged: (v) => setState(() => mode = v!)),
         DropdownButtonFormField<int>(
-            value: ms,
+            initialValue: ms,
             decoration: const InputDecoration(labelText: 'Tốc độ ảnh'),
             items: const [
               DropdownMenuItem(
@@ -558,8 +559,13 @@ class _SettingsPageState extends State<SettingsPage> {
 
 class RemotePage extends StatefulWidget {
   const RemotePage(
-      {super.key, required this.agent, required this.pollMs, this.settings});
+      {super.key,
+      required this.agent,
+      required this.pollMs,
+      this.settings,
+      this.rdpMode = rdpPrototype});
   final Widget Function()? settings;
+  final bool rdpMode;
   final Agent agent;
   final int Function() pollMs;
   @override
@@ -637,7 +643,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   }
 
   Future<void> poll() async {
-    if (!mounted || !running || polling) {
+    if (widget.rdpMode || !mounted || !running || polling) {
       return;
     }
     polling = true;
@@ -1116,6 +1122,18 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) => Scaffold(
         body: LayoutBuilder(builder: (context, box) {
+          if (widget.rdpMode) {
+            return Column(children: [
+              const Expanded(
+                  child: SizedBox(
+                      key: ValueKey('remote-half'), child: RdpSurface())),
+              Expanded(
+                  child: SizedBox(
+                      key: const ValueKey('keyboard-half'),
+                      child:
+                          AbsorbPointer(child: laptopDeck(keyboardPanel())))),
+            ]);
+          }
           final d = display;
           final size = d == null
               ? agent.virtualSize
