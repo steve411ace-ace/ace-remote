@@ -420,7 +420,8 @@ class _HomeState extends State<Home> {
                                     MaterialPageRoute<void>(
                                         builder: (_) => RemotePage(
                                             agent: widget.agent,
-                                            pollMs: widget.pollMs)))
+                                            pollMs: widget.pollMs,
+                                            settings: widget.settings)))
                                 : null,
                             child: const Text('Kết nối')),
                         OutlinedButton(
@@ -549,7 +550,9 @@ class _SettingsPageState extends State<SettingsPage> {
 }
 
 class RemotePage extends StatefulWidget {
-  const RemotePage({super.key, required this.agent, required this.pollMs});
+  const RemotePage(
+      {super.key, required this.agent, required this.pollMs, this.settings});
+  final Widget Function()? settings;
   final Agent agent;
   final int Function() pollMs;
   @override
@@ -564,7 +567,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Map<String, dynamic>? failedData;
   Size imageSize = const Size(1, 1);
   final transform = TransformationController();
-  final text = TextEditingController();
   Timer? timer;
   bool running = true,
       polling = false,
@@ -694,6 +696,22 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
             failedData = {...data, 'monitor': targetMonitor};
             controlsHealthy = false;
           });
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            duration: const Duration(seconds: 10),
+            content: Text(error!),
+            action: SnackBarAction(
+                label: 'Thử lại',
+                onPressed: () async {
+                  final path = failedPath;
+                  final data = failedData;
+                  if (path == null || data == null) return;
+                  setState(() {
+                    error = null;
+                    controlsHealthy = true;
+                  });
+                  await send(path, data);
+                }),
+          ));
         }
       }
     }).whenComplete(() => pending--);
@@ -804,7 +822,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     frame?.dispose();
     transform.dispose();
-    text.dispose();
     super.dispose();
   }
 
@@ -816,11 +833,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         final source =
             d?.cropRect(agent.virtualOrigin, agent.virtualSize, imageSize) ??
                 (Offset.zero & imageSize);
-        final scale = box.maxWidth / source.width;
+        final scale =
+            min(box.maxWidth / source.width, box.maxHeight / source.height);
         fitScale = scale;
-        final fitted = Size(box.maxWidth, source.height * scale);
+        final fitted = Size(source.width * scale, source.height * scale);
         return ClipRect(
             child: OverflowBox(
+          minWidth: 0,
+          maxWidth: double.infinity,
           minHeight: 0,
           maxHeight: double.infinity,
           alignment: Alignment.center,
@@ -852,7 +872,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       });
 
   Widget trackpad({bool translucent = false, Widget? child}) => KeyboardSurface(
-        child: child,
         keyAt: child == null ? null : keyAt,
         onMove: move,
         onClick: click,
@@ -867,40 +886,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
           dragging = down;
           send('/click', {'button': 'left', 'action': down ? 'down' : 'up'});
         },
+        child: child,
       );
-  Widget shortcuts() => SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(children: [
-        for (final entry in const {
-          'Sao chép': 'Ctrl+C',
-          'Dán trên PC': 'Ctrl+V',
-          'Đổi cửa sổ': 'Alt+Tab',
-          'Hiện màn hình nền': 'Win+D',
-          'Khóa máy': 'Win+L',
-          'Ctrl+Alt+Del': 'Ctrl+Alt+Del',
-          'Chụp màn hình': 'PrintScreen',
-          'Quản lý tác vụ': 'Ctrl+Shift+Esc'
-        }.entries)
-          Padding(
-              padding: const EdgeInsets.all(2),
-              child: OutlinedButton(
-                  onPressed: () {
-                    if (entry.value == 'Ctrl+Alt+Del' &&
-                        !agent.capabilities.contains('sas')) {
-                      notice(
-                          'Ctrl+Alt+Del cần agent hỗ trợ SAS của Windows; SendKeys thông thường không thực hiện được.');
-                    } else {
-                      send('/key', {'key': entry.value});
-                    }
-                  },
-                  child: Text(entry.key))),
-      ]));
   final keyTargets = <GlobalKey, VoidCallback>{};
 
   VoidCallback? keyAt(Offset position) {
     for (final entry in keyTargets.entries) {
       final box = entry.key.currentContext?.findRenderObject();
-      if (box is RenderBox && box.hasSize &&
+      if (box is RenderBox &&
+          box.hasSize &&
           (box.localToGlobal(Offset.zero) & box.size).contains(position)) {
         return entry.value;
       }
@@ -916,7 +910,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         click('right');
       } else if (modifier) {
         setState(() {
-          selected ? modifiers.remove(command ?? label) : modifiers.add(command ?? label);
+          selected
+              ? modifiers.remove(command ?? label)
+              : modifiers.add(command ?? label);
         });
       } else if (command != null) {
         key(command);
@@ -926,116 +922,114 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         key(label.toUpperCase());
       }
     }
+
     final target = GlobalKey();
     keyTargets[target] = press;
     return Expanded(
-      flex: (units * 100).round(),
-      child: Padding(
-        padding: const EdgeInsets.all(2),
-        child: Semantics(
-          button: true, selected: selected, label: label, onTap: press,
-          child: Container(
-            key: target,
-            decoration: BoxDecoration(
-              color: selected ? const Color(0xff505762) : const Color(0xff292b30),
-              borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: const Color(0xff3c3e43))),
-            child: Center(child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 2),
-              child: FittedBox(fit: BoxFit.scaleDown,
-                child: label == 'Win'
-                  ? IgnorePointer(child: FilterChip(
-                      label: const Text('Win'), selected: selected,
-                      onSelected: (_) => press()))
-                  : Text(label, style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w500,
-                      color: Colors.white)))))))));
+        flex: (units * 100).round(),
+        child: Padding(
+            padding: const EdgeInsets.all(2),
+            child: Semantics(
+                button: true,
+                selected: selected,
+                label: label,
+                onTap: press,
+                child: Container(
+                    key: target,
+                    decoration: BoxDecoration(
+                        color: selected
+                            ? const Color(0xff505762)
+                            : const Color(0xff292b30),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: const Color(0xff3c3e43))),
+                    child: Center(
+                        child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 2),
+                            child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: label == 'Win'
+                                    ? IgnorePointer(
+                                        child: FilterChip(
+                                            label: const Text('Win'),
+                                            selected: selected,
+                                            onSelected: (_) => press()))
+                                    : Text(label,
+                                        style: const TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w500,
+                                            color: Colors.white)))))))));
   }
 
   Widget keyboardPanel() => LayoutBuilder(builder: (context, box) {
-        // Scroll only on short windows; keep every key available without overflow.
+        // Every key fits inside the keyboard half, including short windows.
         keyTargets.clear();
-        final height = max(216.0, box.maxHeight);
-        return SingleChildScrollView(
-            child: SizedBox(
-                height: height,
-                child: Padding(
-                    padding: const EdgeInsets.all(4),
-                    child: Column(children: [
-                      SizedBox(
-                          height: 44,
-                          child: Row(children: [
-                            Expanded(
-                                child: TextField(
-                                    controller: text,
-                                    maxLines: 1,
-                                    decoration: const InputDecoration(
-                                        hintText: 'Nhập tiếng Việt có dấu',
-                                        isDense: true),
-                                    onSubmitted: (v) async {
-                                      await typeText(v);
-                                      if (controlsHealthy) text.clear();
-                                    })),
-                            IconButton(
-                                tooltip: 'Gõ',
-                                icon: const Icon(Icons.send),
-                                onPressed: () async {
-                                  await typeText(text.text);
-                                  if (controlsHealthy) text.clear();
-                                }),
-                            TextButton(
-                                onPressed: () async {
-                                  try {
-                                    final data = await Clipboard.getData(
-                                        Clipboard.kTextPlain);
-                                    await typeText(data?.text ?? '');
-                                  } catch (_) {
-                                    notice(
-                                        'Không đọc được clipboard điện thoại.');
-                                  }
-                                },
-                                child: const Text('Dán'))
-                          ])),
-                      Expanded(child: trackpad(child: Column(children: [
-                        Expanded(child: Row(children: [
-                          laptopKey('esc', command: 'Esc'),
-                          laptopKey('tab', units: 1.5, command: 'Tab'),
-                          laptopKey('Ctrl', command: 'Ctrl', modifier: true),
-                          laptopKey('Alt', command: 'Alt', modifier: true),
-                          laptopKey('Win', modifier: true),
-                          laptopKey('⇧', command: 'Shift', modifier: true),
-                          for (final e in const {'←':'Left','↑':'Up','↓':'Down','→':'Right'}.entries)
-                            laptopKey(e.key, command: e.value),
-                          laptopKey('Click Phải', units: 2.5),
-                        ])),
-                        Expanded(child: Row(children: [
-                          for (final c in 'qwertyuiop'.split('')) laptopKey(c),
-                          laptopKey('⌫', units: 2, command: 'Backspace'),
-                        ])),
-                        Expanded(child: Row(children: [
-                          const Spacer(flex: 50),
-                          for (final c in 'asdfghjkl'.split('')) laptopKey(c),
-                          laptopKey('⏎', units: 2.25, command: 'Enter'),
-                          const Spacer(flex: 25),
-                        ])),
-                        Expanded(child: Row(children: [
-                          const Spacer(flex: 75),
-                          for (final c in 'zxcvbnm,.'.split('')) laptopKey(c),
-                          laptopKey('⇧', units: 2.25, command: 'Shift', modifier: true),
-                        ])),
-                        Expanded(child: Row(children: [
-                          laptopKey('Ctrl', units: 1.25, command: 'Ctrl', modifier: true),
-                          laptopKey('Alt', units: 1.25, command: 'Alt', modifier: true),
-                          laptopKey('Space', units: 5.5, command: 'Space'),
-                          for (final e in const {'←':'Left','↑':'Up','↓':'Down','→':'Right'}.entries)
-                            laptopKey(e.key, command: e.value),
-                        ])),
-                      ]))),
-                    ]))));
+        final height = box.maxHeight;
+        return SizedBox(
+            height: height,
+            child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Column(children: [
+                  Expanded(
+                      child: trackpad(
+                          child: Column(children: [
+                    Expanded(
+                        child: Row(children: [
+                      laptopKey('esc', command: 'Esc'),
+                      laptopKey('tab', units: 1.5, command: 'Tab'),
+                      laptopKey('Ctrl', command: 'Ctrl', modifier: true),
+                      laptopKey('Alt', command: 'Alt', modifier: true),
+                      laptopKey('Win', modifier: true),
+                      laptopKey('⇧', command: 'Shift', modifier: true),
+                      for (final e in const {
+                        '←': 'Left',
+                        '↑': 'Up',
+                        '↓': 'Down',
+                        '→': 'Right'
+                      }.entries)
+                        laptopKey(e.key, command: e.value),
+                      laptopKey('Click Phải', units: 2.5),
+                    ])),
+                    Expanded(
+                        child: Row(children: [
+                      for (final c in 'qwertyuiop'.split('')) laptopKey(c),
+                      laptopKey('⌫', units: 2, command: 'Backspace'),
+                    ])),
+                    Expanded(
+                        child: Row(children: [
+                      const Spacer(flex: 50),
+                      for (final c in 'asdfghjkl'.split('')) laptopKey(c),
+                      laptopKey('⏎', units: 2.25, command: 'Enter'),
+                      const Spacer(flex: 25),
+                    ])),
+                    Expanded(
+                        child: Row(children: [
+                      const Spacer(flex: 75),
+                      for (final c in 'zxcvbnm,.'.split('')) laptopKey(c),
+                      laptopKey('⇧',
+                          units: 2.25, command: 'Shift', modifier: true),
+                    ])),
+                    Expanded(
+                        child: Row(children: [
+                      laptopKey('Ctrl',
+                          units: 1.25, command: 'Ctrl', modifier: true),
+                      laptopKey('Alt',
+                          units: 1.25, command: 'Alt', modifier: true),
+                      laptopKey('Space', units: 5.5, command: 'Space'),
+                      for (final e in const {
+                        '←': 'Left',
+                        '↑': 'Up',
+                        '↓': 'Down',
+                        '→': 'Right'
+                      }.entries)
+                        laptopKey(e.key, command: e.value),
+                    ])),
+                  ]))),
+                ])));
       });
 
   Widget laptopDeck(Widget child) {
-    return Theme(data: ThemeData.dark(useMaterial3: true),
+    return Theme(
+        data: ThemeData.dark(useMaterial3: true),
         child: ColoredBox(color: const Color(0xff16171a), child: child));
   }
 
@@ -1048,108 +1042,136 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                 const Text('Nhật ký mock (100 lệnh gần nhất)'),
                 ...entries.reversed.map((e) => SelectableText(e))
               ])));
-  @override
-  Widget build(BuildContext context) {
-    final landscape =
-        MediaQuery.orientationOf(context) == Orientation.landscape;
-    return Scaffold(
-        appBar: AppBar(title: Text('ace • Màn hình $monitor'), actions: [
-          if (agent.mock)
-            IconButton(
-                tooltip: 'Nhật ký mock',
-                onPressed: showLog,
-                icon: const Icon(Icons.receipt_long)),
-          IconButton(
-              tooltip: 'Bàn phím',
-              onPressed: () => setState(() => keyboard = !keyboard),
-              icon: const Icon(Icons.keyboard)),
-          PopupMenuButton<String>(
-              tooltip: 'Thao tác nhanh',
-              onSelected: power,
-              itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'sleep', child: Text('Ngủ')),
-                    PopupMenuItem(
-                        value: 'restart', child: Text('Khởi động lại')),
-                    PopupMenuItem(value: 'shutdown', child: Text('Tắt máy'))
-                  ]),
-        ]),
-        body: SafeArea(
-            child: Column(children: [
-          if (error != null || !controlsHealthy)
-            Container(
-                color: Theme.of(context).colorScheme.errorContainer,
-                padding: const EdgeInsets.all(6),
-                child: Row(children: [
-                  Expanded(
-                      child: Text(error ?? 'Lệnh điều khiển bị gián đoạn.')),
-                  TextButton(
-                      onPressed: () async {
-                        final path = failedPath;
-                        final data = failedData;
-                        if (path == null || data == null) return;
-                        setState(() {
-                          error = null;
-                          controlsHealthy = true;
-                        });
-                        await send(path, data);
-                      },
-                      child: const Text('Thử lại'))
-                ])),
-          SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(children: [
-                for (final d in agent.displays)
-                  TextButton(
-                      style: TextButton.styleFrom(
-                          backgroundColor: d.id == monitor
-                              ? Theme.of(context).colorScheme.secondaryContainer
-                              : null),
-                      onPressed: () => setState(() {
-                            monitor = d.id;
-                            transform.value = Matrix4.identity();
-                            cursor =
-                                Offset(d.x + d.width / 2, d.y + d.height / 2);
-                          }),
-                      child: Text(
-                          'Màn hình ${d.id}${d.id == monitor ? ' ✓' : ''}')),
-                TextButton(
-                    onPressed: () => transform.value = Matrix4.identity(),
-                    child: const Text('Vừa màn hình')),
-                TextButton(
-                    onPressed: () => transform.value =
-                        Matrix4.diagonal3Values(1 / fitScale, 1 / fitScale, 1),
-                    child: const Text('1:1')),
-                Switch(
-                    value: relative,
-                    onChanged: (v) => setState(() => relative = v)),
-                Text(relative ? 'Trackpad tương đối' : 'Chạm tuyệt đối'),
-                if (!landscape)
-                  IconButton(
-                      tooltip: 'Bật/tắt lớp trackpad',
-                      onPressed: () => setState(() {
-                            overlay = !overlay;
-                            if (overlay) {
-                              relative = true;
-                            }
-                          }),
-                      icon: Icon(
-                          overlay ? Icons.touch_app : Icons.pan_tool_outlined)),
-                Text('Ảnh: ${(1000 / delay).toStringAsFixed(1)}/giây'),
-              ])),
-          Expanded(child: Column(children: [
-            if (landscape)
-              Expanded(child: screenshot())
-            else
-              AspectRatio(
-                aspectRatio: display == null ? 16 / 9 : display!.width / display!.height,
-                child: screenshot()),
-            if (keyboard) Expanded(child: laptopDeck(keyboardPanel())),
-          ])),
-          shortcuts(),
-        ])));
+  Future<void> menuAction(String action) async {
+    if (action.startsWith('monitor:')) {
+      final id = int.parse(action.substring(8));
+      final d = agent.displays.firstWhere((d) => d.id == id);
+      releaseDrag();
+      setState(() {
+        monitor = id;
+        transform.value = Matrix4.identity();
+        cursor = Offset(d.x + d.width / 2, d.y + d.height / 2);
+      });
+    } else if (action == 'fit') {
+      transform.value = Matrix4.identity();
+    } else if (action == 'actual') {
+      transform.value = Matrix4.diagonal3Values(1 / fitScale, 1 / fitScale, 1);
+    } else if (action == 'relative') {
+      releaseDrag();
+      setState(() => relative = !relative);
+    } else if (action == 'overlay') {
+      releaseDrag();
+      setState(() {
+        overlay = !overlay;
+        if (overlay) relative = true;
+      });
+    } else if (action == 'keyboard') {
+      releaseDrag();
+      setState(() => keyboard = !keyboard);
+    } else if (action == 'log') {
+      showLog();
+    } else if (action == 'settings') {
+      await Navigator.push(
+          context,
+          MaterialPageRoute<void>(
+              builder: (_) =>
+                  widget.settings?.call() ??
+                  SettingsPage(
+                      agent: agent,
+                      theme: ThemeMode.system,
+                      pollMs: widget.pollMs(),
+                      onSave: (url, mode, ms) async {
+                        agent.baseUrl = url;
+                      })));
+      if (mounted) {
+        try {
+          await agent.health();
+        } catch (e) {
+          notice(clean(e));
+        }
+      }
+    } else if (action == 'disconnect') {
+      Navigator.pop(context);
+    } else {
+      await power(action);
+    }
   }
 
-
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: Column(children: [
+          Expanded(
+              flex: 1,
+              child: Stack(key: const ValueKey('remote-half'), children: [
+                Positioned.fill(child: screenshot()),
+                Positioned(
+                    top: 0,
+                    right: 0,
+                    child: SafeArea(
+                        bottom: false,
+                        child: PopupMenuButton<String>(
+                          tooltip: 'Điều khiển',
+                          icon:
+                              const Icon(Icons.more_vert, color: Colors.white),
+                          color: Theme.of(context).colorScheme.surface,
+                          onSelected: menuAction,
+                          itemBuilder: (_) => [
+                            for (final d in agent.displays)
+                              CheckedPopupMenuItem(
+                                  value: 'monitor:${d.id}',
+                                  checked: d.id == monitor,
+                                  child: Text('Màn hình ${d.id}')),
+                            const PopupMenuItem(
+                                value: 'fit', child: Text('Vừa màn hình')),
+                            const PopupMenuItem(
+                                value: 'actual', child: Text('1:1')),
+                            PopupMenuItem(
+                                value: 'relative',
+                                child: Text(relative
+                                    ? 'Trackpad tương đối'
+                                    : 'Chạm tuyệt đối')),
+                            CheckedPopupMenuItem(
+                                value: 'overlay',
+                                checked: overlay,
+                                child: const Text('Bật/tắt lớp trackpad')),
+                            CheckedPopupMenuItem(
+                                value: 'keyboard',
+                                checked: keyboard,
+                                child: const Text('Bật/tắt bàn phím')),
+                            const PopupMenuItem(
+                                value: 'sleep', child: Text('Ngủ')),
+                            const PopupMenuItem(
+                                value: 'restart', child: Text('Khởi động lại')),
+                            const PopupMenuItem(
+                                value: 'shutdown', child: Text('Tắt máy')),
+                            const PopupMenuItem(
+                                value: 'settings', child: Text('Cài đặt')),
+                            const PopupMenuItem(
+                                value: 'disconnect',
+                                child: Text('Ngắt kết nối')),
+                            if (agent.mock)
+                              const PopupMenuItem(
+                                  value: 'log', child: Text('Nhật ký mock')),
+                          ],
+                        ))),
+                Positioned(
+                    bottom: 4,
+                    right: 6,
+                    child: IgnorePointer(
+                        child: Text(
+                            'Ảnh: ${(1000 / delay).toStringAsFixed(1)}/giây',
+                            style: const TextStyle(
+                                fontSize: 10, color: Colors.white54)))),
+              ])),
+          Expanded(
+              flex: 1,
+              child: SizedBox(
+                  key: const ValueKey('keyboard-half'),
+                  child: keyboard
+                      ? laptopDeck(keyboardPanel())
+                      : const SizedBox.expand())),
+        ]),
+      );
 }
 
 class KeyboardSurface extends StatefulWidget {
@@ -1159,7 +1181,8 @@ class KeyboardSurface extends StatefulWidget {
       required this.onClick,
       required this.onScroll,
       required this.onDrag,
-      this.child, this.keyAt});
+      this.child,
+      this.keyAt});
   final void Function(Offset) onMove;
   final void Function(String) onClick;
   final void Function(double) onScroll;

@@ -4,10 +4,14 @@ import 'dart:ui' as ui;
 import 'package:ace_remote/agent.dart';
 import 'package:ace_remote/main.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+
+int stateMonitor(WidgetTester tester) {
+  final dynamic state = tester.state(find.byType(RemotePage));
+  return state.monitor as int;
+}
 
 void main() {
   testWidgets('Home shows only the supported Windows PC', (tester) async {
@@ -34,23 +38,25 @@ void main() {
       final picture = recorder.endRecording();
       final image = await picture.toImage(4, 2);
       final bytes = (await image.toByteData(format: ui.ImageByteFormat.png))!
-          .buffer.asUint8List();
+          .buffer
+          .asUint8List();
       image.dispose();
       picture.dispose();
       return bytes;
     }))!;
     var requests = 0;
     final nextFrame = Completer<http.Response>();
-    final agent = Agent(baseUrl: defaultBaseUrl,
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
         client: MockClient((request) async {
-      requests++;
-      if (requests == 1) return http.Response('frame unavailable', 503);
-      if (requests == 2) return http.Response.bytes(png, 200);
-      return nextFrame.future;
-    }));
+          requests++;
+          if (requests == 1) return http.Response('frame unavailable', 503);
+          if (requests == 2) return http.Response.bytes(png, 200);
+          return nextFrame.future;
+        }));
     addTearDown(agent.dispose);
-    await tester.pumpWidget(MaterialApp(
-        home: RemotePage(agent: agent, pollMs: () => 1000)));
+    await tester.pumpWidget(
+        MaterialApp(home: RemotePage(agent: agent, pollMs: () => 1000)));
     await tester.pump();
     final dynamic state = tester.state(find.byType(RemotePage));
     expect(state.failures, 1);
@@ -65,8 +71,12 @@ void main() {
     expect(state.failures, 0);
     expect(state.delay, 1000);
     expect(state.error, isNull);
-    expect(tester.widgetList<CustomPaint>(find.byType(CustomPaint))
-        .map((w) => w.painter).whereType<RemoteFramePainter>(), isNotEmpty);
+    expect(
+        tester
+            .widgetList<CustomPaint>(find.byType(CustomPaint))
+            .map((w) => w.painter)
+            .whereType<RemoteFramePainter>(),
+        isNotEmpty);
     expect(find.text('Ảnh: 1.0/giây'), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 1000));
     expect(requests, 3);
@@ -111,19 +121,21 @@ void main() {
     await f.up();
     expect(events, ['drag:true', 'move', 'drag:false']);
   });
-  testWidgets('Keyboard tap versus move and two-finger scroll send distinct commands',
+  testWidgets(
+      'Keyboard tap versus move and two-finger scroll send distinct commands',
       (tester) async {
     final requests = <http.Request>[];
-    final agent = Agent(baseUrl: defaultBaseUrl,
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
         client: MockClient((request) async {
-      if (request.method == 'GET') return http.Response('no frame', 503);
-      requests.add(request);
-      return http.Response('{}', 200);
-    }));
+          if (request.method == 'GET') return http.Response('no frame', 503);
+          requests.add(request);
+          return http.Response('{}', 200);
+        }));
     agent.displays = [const DisplayInfo(1, 0, 0, 1920, 1080)];
     addTearDown(agent.dispose);
-    await tester.pumpWidget(MaterialApp(
-        home: RemotePage(agent: agent, pollMs: () => 1000)));
+    await tester.pumpWidget(
+        MaterialApp(home: RemotePage(agent: agent, pollMs: () => 1000)));
     final q = tester.getCenter(find.text('q'));
     final tap = await tester.startGesture(q);
     await tap.moveBy(const Offset(4, 2));
@@ -146,7 +158,8 @@ void main() {
     requests.clear();
 
     final first = await tester.startGesture(q, pointer: 11);
-    final second = await tester.startGesture(q + const Offset(30, 0), pointer: 12);
+    final second =
+        await tester.startGesture(q + const Offset(30, 0), pointer: 12);
     await second.moveBy(const Offset(0, 20));
     await second.up();
     await first.up();
@@ -164,8 +177,7 @@ void main() {
     expect(jsonDecode(requests.single.body)['button'], 'right');
     requests.clear();
 
-    await tester.tap(find.byType(TextField));
-    await tester.pump();
+    expect(find.byType(TextField), findsNothing);
     expect(requests, isEmpty);
     await tester.pumpWidget(const SizedBox());
   });
@@ -200,13 +212,15 @@ void main() {
     expect(screenshotRequests.single.url.hasQuery, isFalse);
     expect(commands, hasLength(2));
     expect(find.textContaining('Lệnh điều khiển bị gián đoạn'), findsOneWidget);
+    await tester.tap(find.byTooltip('Điều khiển'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Màn hình 2'));
-    await tester.pump();
-    expect(find.text('Màn hình 2 ✓'), findsOneWidget);
-    expect(find.text('ace • Màn hình 2'), findsOneWidget);
+    await tester.pumpAndSettle();
+    expect(stateMonitor(tester), 2);
     await tester.tap(find.text('Thử lại'));
-    await tester.pump();
-    await tester.pump();
+    // Tapping the SnackBar action starts its dismiss animation; settle so the
+    // snackbar leaves the tree before asserting the error text is gone.
+    await tester.pumpAndSettle();
     expect(commands, hasLength(3));
     expect(commands.last['monitor'], 1);
     expect(find.textContaining('Lệnh điều khiển bị gián đoạn'), findsNothing);
@@ -214,7 +228,7 @@ void main() {
     screenshot.complete(http.Response('frame unavailable', 503));
     await tester.pump();
     await tester.pump();
-    expect(find.text('Màn hình 2 ✓'), findsOneWidget);
+    expect(stateMonitor(tester), 2);
     expect(find.textContaining('Lệnh điều khiển bị gián đoạn'), findsNothing);
     await tester.tap(find.text('Click Phải'));
     await tester.pump();
@@ -267,8 +281,9 @@ void main() {
                 }),
                 200);
           }
-          if (request.url.path == '/screenshot')
+          if (request.url.path == '/screenshot') {
             return http.Response.bytes(png, 200);
+          }
           moveRequests.add(request);
           moves.add(jsonDecode(request.body) as Map<String, dynamic>);
           return http.Response('{"ok":true}', 200);
@@ -299,8 +314,10 @@ void main() {
     expect(moves.last['x'], 120);
     expect(moves.last['y'], 190);
     expect(moves.last.containsKey('relative'), isFalse);
+    await tester.tap(find.byTooltip('Điều khiển'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Màn hình 2'));
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(crop().left, 0);
     expect(crop().top, 0);
     expect(crop().width, closeTo(153.6, 0.000001));
@@ -380,66 +397,97 @@ void main() {
     expect(commands.single['y'], 235);
     await tester.pumpWidget(const SizedBox());
   });
-  testWidgets(
-      'Typing sends raw Unicode, reports agent error; PC paste uses Ctrl+V',
+  testWidgets('Direct keys send text and modifier chords without text input',
       (tester) async {
-    tester.view.physicalSize = const Size(1400, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
     final requests = <http.Request>[];
-    var failType = false;
     final a = Agent(
         baseUrl: defaultBaseUrl,
         client: MockClient((request) async {
           if (request.method == 'GET') return http.Response('no frame', 503);
           requests.add(request);
-          if (failType && request.url.path == '/type') {
-            return http.Response(
-                '{"ok":false,"error":"SendKeys layout failure"}', 500);
-          }
-          return http.Response('{"ok":true}', 200);
+          return http.Response('{}', 200);
         }));
     addTearDown(a.dispose);
     await tester.pumpWidget(
         MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
-    await tester.enterText(find.byType(TextField), 'Tiếng Việt +^%~(){}');
-    await tester.tap(find.byTooltip('Gõ'));
+    expect(find.byType(TextField), findsNothing);
+    expect(find.text('Dán'), findsNothing);
+    expect(find.text('Dán trên PC'), findsNothing);
+    await tester.tap(find.text('q'));
     await tester.pump();
-    expect(requests.last.url.path, '/type');
-    expect(jsonDecode(requests.last.body)['text'], 'Tiếng Việt +^%~(){}');
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        isEmpty);
-    await tester.ensureVisible(find.text('Dán trên PC'));
-    await tester.tap(find.text('Dán trên PC'));
+    expect(requests.single.url.path, '/type');
+    expect(jsonDecode(requests.single.body)['text'], 'q');
+    await tester.tap(find.text('Ctrl').first);
+    await tester.tap(find.text('c'));
     await tester.pump();
     expect(requests.last.url.path, '/key');
-    expect(jsonDecode(requests.last.body)['keys'], '^v');
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
-      if (call.method == 'Clipboard.getData') {
-        return {'text': 'Dán từ điện thoại +{} Việt'};
-      }
-      return null;
-    });
-    addTearDown(() => TestDefaultBinaryMessengerBinding
-        .instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(SystemChannels.platform, null));
-    await tester.tap(find.text('Dán'));
+    expect(jsonDecode(requests.last.body)['keys'], '^c');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Remote has two equal halves and a complete floating menu',
+      (tester) async {
+    final a = Agent(baseUrl: defaultBaseUrl, mock: true);
+    await a.health();
+    addTearDown(a.dispose);
+    await tester.pumpWidget(
+        MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
+    for (final size in [
+      const Size(900, 1200),
+      const Size(1200, 600),
+      const Size(360, 480)
+    ]) {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      await tester.pump();
+      final remote = find.byKey(const ValueKey('remote-half'));
+      final keyboard = find.byKey(const ValueKey('keyboard-half'));
+      expect(tester.getSize(remote), Size(size.width, size.height / 2));
+      expect(tester.getSize(keyboard), tester.getSize(remote));
+      expect(tester.getTopLeft(remote), Offset.zero);
+      expect(tester.getTopLeft(keyboard).dy, size.height / 2);
+      final body =
+          tester.widget<Scaffold>(find.byType(Scaffold)).body! as Column;
+      expect(body.children, hasLength(2));
+      expect(body.children.cast<Expanded>().map((w) => w.flex), [1, 1]);
+      expect(find.byType(AppBar), findsNothing);
+      expect(find.byType(TextField), findsNothing);
+      expect(find.byType(SingleChildScrollView), findsNothing);
+      expect(tester.takeException(), isNull);
+    }
+    tester.view.physicalSize = const Size(900, 1200);
     await tester.pump();
-    await tester.pump();
-    expect(requests.last.url.path, '/type');
-    expect(
-        jsonDecode(requests.last.body)['text'], 'Dán từ điện thoại +{} Việt');
-    failType = true;
-    await tester.enterText(find.byType(TextField), 'Giữ lại khi lỗi');
-    await tester.tap(find.byTooltip('Gõ'));
-    await tester.pump();
-    await tester.pump();
-    expect(find.textContaining('SendKeys layout failure'), findsWidgets);
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        'Giữ lại khi lỗi');
-    expect(requests.where((r) => r.url.path == '/type'), hasLength(4));
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.tap(find.byTooltip('Điều khiển'));
+    await tester.pumpAndSettle();
+    for (final label in [
+      'Màn hình 1',
+      'Màn hình 2',
+      'Vừa màn hình',
+      '1:1',
+      'Chạm tuyệt đối',
+      'Bật/tắt lớp trackpad',
+      'Bật/tắt bàn phím',
+      'Ngủ',
+      'Khởi động lại',
+      'Tắt máy',
+      'Cài đặt',
+      'Ngắt kết nối',
+      'Nhật ký mock'
+    ]) {
+      expect(find.text(label), findsOneWidget);
+    }
+    await tester.tap(find.text('Chạm tuyệt đối'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Điều khiển'));
+    await tester.pumpAndSettle();
+    expect(find.text('Trackpad tương đối'), findsOneWidget);
+    await tester.tap(find.text('Bật/tắt bàn phím'));
+    await tester.pumpAndSettle();
+    expect(find.text('q'), findsNothing);
+    expect(tester.getSize(find.byKey(const ValueKey('keyboard-half'))).height,
+        600);
     await tester.pumpWidget(const SizedBox());
   });
   testWidgets('Shutdown requires two approvals; cancel sends nothing',
@@ -451,6 +499,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     await tester.tap(find.byType(PopupMenuButton<String>));
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Tắt máy'));
     await tester.tap(find.text('Tắt máy'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Xác nhận'));
