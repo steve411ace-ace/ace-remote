@@ -1,0 +1,392 @@
+import 'package:ace_remote/agent.dart';
+import 'package:ace_remote/main.dart';
+import 'package:ace_remote/rdp_connections.dart';
+import 'package:ace_remote/rdp_credentials.dart';
+import 'package:ace_remote/rdp_surface.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    FlutterSecureStorage.setMockInitialValues({});
+  });
+
+  test('load seeds the default ace connection on first run', () async {
+    final connections = await RdpConnectionStore().load();
+    expect(connections, hasLength(1));
+    expect(connections.first.id, 'ace');
+    expect(connections.first.name, 'ace — Windows');
+    expect(connections.first.host, '100.101.127.41');
+    expect(connections.first.port, 3389);
+  });
+
+  test('seed carries over the single credentials saved by step 21', () async {
+    await storage.write(
+        key: rdpUsernameKey, value: 'steve', aOptions: rdpStorageOptions);
+    await storage.write(
+        key: rdpPasswordKey, value: 'pw123', aOptions: rdpStorageOptions);
+    final store = RdpConnectionStore();
+    final connections = await store.load();
+    expect(connections.first.username, 'steve');
+    expect(await store.passwordFor('ace'), 'pw123');
+  });
+
+  test('add stores the record in prefs and the password only in secure storage',
+      () async {
+    final store = RdpConnectionStore();
+    final added = await store.add(
+        name: 'PC test',
+        host: '10.0.0.5',
+        port: 3389,
+        username: 'steve',
+        password: 's3cret');
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(RdpConnectionStore.listKey)!;
+    expect(raw, contains('PC test'));
+    expect(raw, isNot(contains('s3cret')));
+    expect(raw, isNot(contains('steve')));
+    expect(await store.passwordFor(added.id), 's3cret');
+    expect(await store.usernameFor(added.id), 'steve');
+    final all = await store.load();
+    expect(all.map((c) => c.name), containsAll(['ace — Windows', 'PC test']));
+    expect(all.singleWhere((c) => c.id == added.id).username, 'steve');
+  });
+
+  test('update changes the record and password', () async {
+    final store = RdpConnectionStore();
+    final added = await store.add(
+        name: 'PC test',
+        host: '10.0.0.5',
+        port: 3389,
+        username: 'steve',
+        password: 's3cret');
+    await store.update(added.copyWith(name: 'PC doi ten', host: '10.0.0.6'),
+        password: 'pw-moi');
+    final all = await store.load();
+    final updated = all.singleWhere((c) => c.id == added.id);
+    expect(updated.name, 'PC doi ten');
+    expect(updated.host, '10.0.0.6');
+    expect(await store.passwordFor(added.id), 'pw-moi');
+  });
+
+  test('remove deletes the record and its secure keys', () async {
+    final store = RdpConnectionStore();
+    final added = await store.add(
+        name: 'PC test',
+        host: '10.0.0.5',
+        port: 3389,
+        username: 'steve',
+        password: 's3cret');
+    await store.remove(added.id);
+    final all = await store.load();
+    expect(all.map((c) => c.id), isNot(contains(added.id)));
+    expect(await store.passwordFor(added.id), '');
+    expect(await store.usernameFor(added.id), '');
+  });
+
+  test('saveCredentials writes the per-connection keys', () async {
+    final store = RdpConnectionStore();
+    await store.saveCredentials('ace', username: 'steve', password: 'pw123');
+    expect(await store.usernameFor('ace'), 'steve');
+    expect(await store.passwordFor('ace'), 'pw123');
+  });
+
+  test('trackpad, keyboard and favorite settings round-trip; favorites sort first',
+      () async {
+    final store = RdpConnectionStore();
+    final plain = await store.add(
+        name: 'PC thuong', host: '10.0.0.5', port: 3389);
+    final starred = await store.add(
+        name: 'PC yeu thich',
+        host: '10.0.0.6',
+        port: 3390,
+        trackpadMode: true,
+        keyboardVisible: false,
+        favorite: true);
+    var all = await store.load();
+    expect(all.first.id, starred.id);
+    expect(all.first.trackpadMode, isTrue);
+    expect(all.first.keyboardVisible, isFalse);
+    expect(all.first.favorite, isTrue);
+    expect(all.last.id, plain.id);
+    // Old records without the new keys get the defaults.
+    await store.update(plain.copyWith(favorite: true));
+    all = await store.load();
+    expect(all.map((c) => c.id).toList(), [plain.id, starred.id, 'ace']);
+    expect(all.firstWhere((c) => c.id == plain.id).trackpadMode, isFalse);
+    expect(all.firstWhere((c) => c.id == plain.id).keyboardVisible, isTrue);
+  });
+
+  testWidgets('Home lists saved connections; tapping one connects with its saved credentials',
+      (tester) async {
+    // Step 21 already saved a user/pass: the seeded ace connection inherits them.
+    await storage.write(
+        key: rdpUsernameKey, value: 'steve', aOptions: rdpStorageOptions);
+    await storage.write(
+        key: rdpPasswordKey, value: 'pw123', aOptions: rdpStorageOptions);
+    const channel = MethodChannel('vn.aceremote.app/rdp/0');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: Home(
+            agent: agent,
+            pollMs: () => 1000,
+            settings: () => const SizedBox())));
+    await tester.pumpAndSettle();
+    expect(find.text('Kết nối đã lưu'), findsOneWidget);
+    expect(find.text('ace — Windows'), findsOneWidget);
+    expect(find.text('steve'), findsOneWidget);
+    expect(find.text('100.101.127.41:3389'), findsOneWidget);
+    await tester.tap(find.text('ace — Windows'));
+    // The pushed route needs two frames to appear in the tree.
+    await tester.pump();
+    await tester.pump();
+    // Attach the controller (as the platform view would) so connect() can send.
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(0);
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump();
+    final connectCall = calls.singleWhere((c) => c.method == 'connect');
+    expect(connectCall.arguments, {
+      'host': '100.101.127.41',
+      'port': 3389,
+      'username': 'steve',
+      'password': 'pw123',
+    });
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('add connection page saves a new card with its settings', (tester) async {
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: Home(
+            agent: agent,
+            pollMs: () => 1000,
+            settings: () => const SizedBox())));
+    await tester.pumpAndSettle();
+    expect(find.text('ace — Windows'), findsOneWidget);
+    await tester.tap(find.byTooltip('Thêm kết nối'));
+    await tester.pumpAndSettle();
+    expect(find.text('Thêm kết nối'), findsOneWidget);
+    await tester.enterText(
+        find.byKey(const ValueKey('connection-name')), 'PC moi');
+    await tester.enterText(
+        find.byKey(const ValueKey('connection-host')), '10.0.0.9');
+    await tester.enterText(
+        find.byKey(const ValueKey('connection-port')), '3390');
+    await tester.enterText(
+        find.byKey(const ValueKey('connection-username')), 'admin');
+    await tester.enterText(
+        find.byKey(const ValueKey('connection-password')), 'pw-moi');
+    // Turn on trackpad mode for the new connection.
+    await tester.ensureVisible(find.text('Chế độ Trackpad'));
+    await tester.tap(find.text('Chế độ Trackpad'));
+    await tester.pump();
+    await tester.ensureVisible(find.text('Lưu'));
+    await tester.tap(find.text('Lưu'));
+    await tester.pumpAndSettle();
+    expect(find.text('PC moi'), findsOneWidget);
+    expect(find.text('10.0.0.9:3390'), findsOneWidget);
+    expect(find.text('admin'), findsOneWidget);
+    // The password went to secure storage, not into the prefs JSON.
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString(RdpConnectionStore.listKey),
+        isNot(contains('pw-moi')));
+    final store = RdpConnectionStore();
+    final all = await store.load();
+    final added = all.singleWhere((c) => c.name == 'PC moi');
+    expect(await store.passwordFor(added.id), 'pw-moi');
+    expect(added.trackpadMode, isTrue);
+    expect(added.keyboardVisible, isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('long-press menu edits a connection and saves its settings', (tester) async {
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: Home(
+            agent: agent,
+            pollMs: () => 1000,
+            settings: () => const SizedBox())));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('ace — Windows'));
+    await tester.pumpAndSettle();
+    expect(find.text('Connect'), findsOneWidget);
+    expect(find.text('Favorite'), findsOneWidget);
+    expect(find.text('Edit'), findsOneWidget);
+    expect(find.text('Delete'), findsOneWidget);
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    expect(find.text('Sửa kết nối'), findsOneWidget);
+    await tester.enterText(
+        find.byKey(const ValueKey('connection-name')), 'ace doi ten');
+    await tester.ensureVisible(find.text('Chế độ Trackpad'));
+    await tester.tap(find.text('Chế độ Trackpad'));
+    await tester.pump();
+    await tester.ensureVisible(find.text('Lưu'));
+    await tester.tap(find.text('Lưu'));
+    await tester.pumpAndSettle();
+    expect(find.text('ace doi ten'), findsOneWidget);
+    expect(find.text('ace — Windows'), findsNothing);
+    final store = RdpConnectionStore();
+    final all = await store.load();
+    expect(all.singleWhere((c) => c.name == 'ace doi ten').trackpadMode,
+        isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('long-press menu deletes a connection after confirmation',
+      (tester) async {
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: Home(
+            agent: agent,
+            pollMs: () => 1000,
+            settings: () => const SizedBox())));
+    await tester.pumpAndSettle();
+    expect(find.text('ace — Windows'), findsOneWidget);
+    await tester.longPress(find.text('ace — Windows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Xóa'));
+    await tester.pumpAndSettle();
+    expect(find.text('ace — Windows'), findsNothing);
+    expect(find.textContaining('Chưa có kết nối nào'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('long-press menu favorites a connection and pins it first', (tester) async {
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    final store = RdpConnectionStore();
+    await store.add(name: 'PC thu hai', host: '10.0.0.5', port: 3389);
+    await tester.pumpWidget(MaterialApp(
+        home: Home(
+            agent: agent,
+            pollMs: () => 1000,
+            settings: () => const SizedBox())));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('PC thu hai'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Favorite'));
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.star), findsOneWidget);
+    expect(
+        tester.getTopLeft(find.text('PC thu hai')).dy,
+        lessThan(tester.getTopLeft(find.text('ace — Windows')).dy));
+    // Unfavorite from the menu: the label flips and the star goes away.
+    await tester.longPress(find.text('PC thu hai'));
+    await tester.pumpAndSettle();
+    expect(find.text('Bỏ yêu thích'), findsOneWidget);
+    await tester.tap(find.text('Bỏ yêu thích'));
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.star), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Back from the remote page disconnects and returns to Home', (tester) async {
+    await storage.write(
+        key: rdpUsernameKey, value: 'steve', aOptions: rdpStorageOptions);
+    await storage.write(
+        key: rdpPasswordKey, value: 'pw123', aOptions: rdpStorageOptions);
+    const channel = MethodChannel('vn.aceremote.app/rdp/0');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: Home(
+            agent: agent,
+            pollMs: () => 1000,
+            settings: () => const SizedBox())));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ace — Windows'));
+    await tester.pump();
+    await tester.pump();
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(0);
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump();
+    expect(calls.map((c) => c.method), contains('connect'));
+    calls.clear();
+    // System back (no AppBar back button on the remote page, so pageBack()
+    // cannot be used): the PopScope pops the route and disconnects first.
+    final popped = await tester.binding.handlePopRoute();
+    expect(popped, isTrue);
+    await tester.pumpAndSettle();
+    expect(find.text('Kết nối đã lưu'), findsOneWidget);
+    expect(find.text('ace — Windows'), findsOneWidget);
+    expect(calls.map((c) => c.method), contains('disconnect'));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('opening a connection applies its trackpad and keyboard settings', (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/0');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final store = RdpConnectionStore();
+    await store.add(
+        name: 'PC trackpad',
+        host: '10.0.0.5',
+        port: 3389,
+        username: 'steve',
+        password: 'pw123',
+        trackpadMode: true,
+        keyboardVisible: false);
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: Home(
+            agent: agent,
+            pollMs: () => 1000,
+            settings: () => const SizedBox())));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('PC trackpad'));
+    await tester.pump();
+    await tester.pump();
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    expect(controller.trackpadMode.value, isTrue);
+    expect(controller.keyboardVisible.value, isFalse);
+    // The keyboard half is hidden: the remote screen fills the page.
+    expect(find.byKey(const ValueKey('remote-half')), findsOneWidget);
+    expect(find.byKey(const ValueKey('keyboard-half')), findsNothing);
+    // Let the auto-connect's 400ms layout delay elapse before disposing,
+    // or the test ends with a timer still pending.
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpWidget(const SizedBox());
+  });
+}

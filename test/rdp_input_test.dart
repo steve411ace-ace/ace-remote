@@ -35,7 +35,7 @@ void main() {
       '.': 0xbe,
       '/': 0xbf,
       'Shift': 0xa0,
-      'Caps': 0xa0,
+      'Caps': 0x14,
       'Ctrl': 0xa2,
       'Alt': 0xa4,
     };

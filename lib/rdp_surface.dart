@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'rdp_connections.dart';
 import 'rdp_credentials.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -135,8 +136,13 @@ class _RdpSurfaceState extends State<RdpSurface> {
 
 /// Restores credentials from secure storage and saves only after native success.
 class RdpConnectionPane extends StatefulWidget {
-  const RdpConnectionPane({super.key, this.controller});
+  const RdpConnectionPane({super.key, this.controller, this.initialConnection});
   final RdpController? controller;
+  // Step 23, item 6: the saved connection tapped on Home. Its host/port are
+  // prefilled and its stored user/pass are loaded; when both are present the
+  // pane connects right away. Null = the legacy path (last-used credentials
+  // from step 21).
+  final RdpConnection? initialConnection;
   @override
   State<RdpConnectionPane> createState() => _RdpConnectionPaneState();
 }
@@ -154,16 +160,57 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
   bool passwordEdited = false;
   bool usernameEdited = false;
   Future<void> storageQueue = Future<void>.value();
-  // Connected-header auto-hide: the header hides a few seconds after connect
-  // so it stops covering the remote screen; a small button brings it back.
-  bool headerVisible = true;
-  Timer? headerHideTimer;
 
   @override
   void initState() {
     super.initState();
     controller.addListener(connectionChanged);
-    unawaited(restoreCredentials());
+    final connection = widget.initialConnection;
+    if (connection != null) {
+      host.text = connection.host;
+      port.text = connection.port.toString();
+      // Step 23 redesign (04:03): trackpad mode and keyboard visibility are
+      // per-connection settings from the Edit screen, not buttons on the
+      // remote screen any more. Apply them after the first frame: setting
+      // keyboardVisible notifies RemotePage's layout listener, which must
+      // not happen while the page is still building (initState runs during
+      // the parent's build). setTrackpadMode re-sends the mode on attach if
+      // the channel is not ready yet.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        unawaited(controller.setTrackpadMode(connection.trackpadMode));
+        controller.setKeyboardVisible(connection.keyboardVisible);
+      });
+      unawaited(_loadConnectionCredentials());
+    } else {
+      unawaited(restoreCredentials());
+    }
+  }
+
+  /// Step 23, item 6: fills the form from the tapped saved connection and
+  /// connects right away when its user/pass are complete. With
+  /// [autoConnect] false it only refills the form (used after a failed or
+  /// dropped connection, so a failure does not loop back into a reconnect).
+  Future<void> _loadConnectionCredentials({bool autoConnect = true}) async {
+    final connection = widget.initialConnection;
+    if (connection == null) return;
+    final store = RdpConnectionStore();
+    try {
+      final user = await store.usernameFor(connection.id);
+      final secret = await store.passwordFor(connection.id);
+      if (!mounted || submitting) return;
+      if (!usernameEdited) username.text = user;
+      if (!passwordEdited) password.text = secret;
+      if (autoConnect &&
+          username.text.trim().isNotEmpty &&
+          password.text.isNotEmpty) {
+        unawaited(connect());
+      }
+    } on PlatformException {
+      if (mounted) {
+        setState(() => localError = 'Không đọc được thông tin đăng nhập đã lưu.');
+      }
+    }
   }
 
   Future<void> restoreCredentials() async {
@@ -184,12 +231,22 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
 
   void connectionChanged() {
     if (controller.isConnected) {
-      showHeaderTemporarily();
       if (pendingPassword != null) {
         final secret = pendingPassword!;
         pendingPassword = null;
+        // Capture now: the queued closures run after this block, when
+        // pendingUsername is already null.
+        final user = pendingUsername ?? username.text.trim();
         queueStorage(() => storage.write(
             key: rdpPasswordKey, value: secret, aOptions: rdpStorageOptions));
+        // Step 23, item 6: the connection in use keeps its own copy of the
+        // credentials, so a user/pass edited in this form is saved back to
+        // it (and the next tap on its card connects with the new values).
+        final connection = widget.initialConnection;
+        if (connection != null) {
+          queueStorage(() => RdpConnectionStore()
+              .saveCredentials(connection.id, username: user, password: secret));
+        }
       }
       if (pendingUsername != null) {
         final user = pendingUsername!;
@@ -199,8 +256,6 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
       }
     } else if (['failed', 'disconnected', 'disconnecting']
         .contains(controller.value['state'])) {
-      headerHideTimer?.cancel();
-      headerVisible = true;
       pendingPassword = null;
       pendingUsername = null;
       if (controller.value['state'] == 'failed' ||
@@ -208,34 +263,17 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
         // Login form is visible again: refill the saved credentials so the
         // user does not have to retype them to reconnect. restoreCredentials()
         // still respects the *Edited flags (set by onChanged) if the user
-        // types first.
+        // types first. With a saved connection the refill comes from that
+        // connection (and never auto-connects, so a failure does not loop).
         passwordEdited = false;
         usernameEdited = false;
-        unawaited(restoreCredentials());
+        if (widget.initialConnection != null) {
+          unawaited(_loadConnectionCredentials(autoConnect: false));
+        } else {
+          unawaited(restoreCredentials());
+        }
       }
     }
-  }
-
-  /// Show the connected header and hide it again after 3 seconds.
-  void showHeaderTemporarily() {
-    headerHideTimer?.cancel();
-    if (!headerVisible && mounted) setState(() => headerVisible = true);
-    headerHideTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted && controller.isConnected) {
-        setState(() => headerVisible = false);
-      }
-    });
-  }
-
-  void toggleTrackpadMode() {
-    unawaited(
-        controller.setTrackpadMode(!controller.trackpadMode.value));
-    showHeaderTemporarily();
-  }
-
-  void toggleKeyboardVisible() {
-    controller.setKeyboardVisible(!controller.keyboardVisible.value);
-    showHeaderTemporarily();
   }
 
   void queueStorage(Future<void> Function() action) {
@@ -246,7 +284,6 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
 
   @override
   void dispose() {
-    headerHideTimer?.cancel();
     controller.removeListener(connectionChanged);
     pendingPassword = null;
     pendingUsername = null;
@@ -266,6 +303,10 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
     passwordEdited = true;
     usernameEdited = true;
     try {
+      // 400ms: let the soft keyboard hide and the layout settle so the
+      // native session starts with the final SurfaceView size (step 19).
+      // Native logs the rest of the connect timing (Log.d AceRdp).
+      debugPrint('AceRdp: connect tapped, waiting 400ms for layout');
       await Future<void>.delayed(const Duration(milliseconds: 400));
       if (!mounted) return;
       pendingPassword = password.text;
@@ -299,38 +340,14 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
       builder: (context, status, _) {
         final state = status['state'];
         if (state == 'connected') {
-          // The header auto-hides a few seconds after connect so it stops
-          // covering the remote screen; a small button brings it back.
-          // The mode / keyboard toggles live here so they stay reachable
-          // even when the keyboard is hidden (never inside the keyboard area).
-          return Align(alignment: Alignment.topRight, child: SafeArea(bottom: false,
-            child: ValueListenableBuilder<bool>(
-              valueListenable: controller.trackpadMode,
-              builder: (context, isTrackpad, _) => ValueListenableBuilder<bool>(
-                valueListenable: controller.keyboardVisible,
-                builder: (context, kbVisible, _) => headerVisible
-                    ? Wrap(alignment: WrapAlignment.end, spacing: 6, children: [
-                        const Chip(label: Text('Đã kết nối')),
-                        FilledButton.tonal(
-                            onPressed: toggleTrackpadMode,
-                            child: Text(isTrackpad ? 'Chạm' : 'Trackpad')),
-                        FilledButton.tonal(
-                            onPressed: toggleKeyboardVisible,
-                            child: Text(kbVisible ? 'Ẩn bàn phím' : 'Hiện bàn phím')),
-                        FilledButton(
-                            onPressed: disconnect,
-                            child: const Text('Ngắt kết nối')),
-                      ])
-                    : IconButton(
-                        tooltip: 'Hiện điều khiển',
-                        onPressed: showHeaderTemporarily,
-                        icon: const Icon(Icons.expand_more),
-                        style: IconButton.styleFrom(
-                            backgroundColor: Colors.black45,
-                            foregroundColor: Colors.white),
-                      ),
-              ),
-            )));
+          // Step 23 redesign (04:03): NO buttons on the remote screen at
+          // all — no Trackpad/Touch, no Hide/Show keyboard, no Disconnect,
+          // no chevron, no "Đã kết nối" pill. The remote screen is just the
+          // desktop + the keyboard, nothing blocking the view. Trackpad mode
+          // and keyboard visibility are per-connection settings from the
+          // Edit screen (applied in initState). Exit with Android Back
+          // (RemotePage's PopScope disconnects first).
+          return const SizedBox.shrink();
         }
         final busy = submitting || state == 'connecting' || state == 'disconnecting';
         return Center(child: SingleChildScrollView(padding: const EdgeInsets.all(12),
@@ -338,7 +355,16 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
             child: Card(child: Padding(padding: const EdgeInsets.all(12),
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 if (busy) ...[
-                  Text(state == 'disconnecting' ? 'Đang ngắt kết nối…' : 'Đang kết nối…'),
+                  // Step 23, item 5: show which connect step we are in
+                  // (native 'phase': creating / connecting / auth) so a slow
+                  // reconnect says where it is stuck; 'Ngắt' still cancels.
+                  Text(state == 'disconnecting'
+                      ? 'Đang ngắt kết nối…'
+                      : (status['phase'] == 'auth'
+                          ? 'Đang xác thực…'
+                          : status['phase'] == 'creating'
+                              ? 'Đang tạo phiên…'
+                              : 'Đang kết nối…')),
                   TextButton(onPressed: state == 'disconnecting' ? null : disconnect, child: const Text('Ngắt')),
                 ] else ...[
                   if (state == 'failed') ...[

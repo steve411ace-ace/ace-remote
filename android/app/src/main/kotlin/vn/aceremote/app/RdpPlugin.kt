@@ -2,7 +2,10 @@ package vn.aceremote.app
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.drawable.BitmapDrawable
 import android.os.Handler
@@ -96,6 +99,18 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
     private var lastX = 0
     private var lastY = 0
     private var touched = false
+    // Remote cursor shape from FreeRDP (OnPointerSet). The pointer is not
+    // part of the framebuffer, so render() draws it as an overlay at the
+    // last known cursor position; without a shape it draws a fallback arrow.
+    private var pointerBitmap: Bitmap? = null
+    private var pointerHotX = 0
+    private var pointerHotY = 0
+    // Connect timing (step 23, item 5): elapsed ms from the 'connect' call
+    // to each phase, logged so a slow reconnect can be pinpointed in logcat.
+    // connectPhase is also sent to Dart (snapshot) for the progress display.
+    private var connectStartedAt = 0L
+    private var connectPhase = ""
+    private var firstFrameLogged = false
     // Relative (trackpad) touch: the finger position never moves the cursor.
     // Drag moves the cursor by the finger delta; tap clicks at the cursor.
     private var trackpadMode = false
@@ -145,6 +160,10 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
     private fun cursorInput(a: Attempt, x: Int, y: Int, flags: Int) {
         if (inputAttempt() !== a || !surfaceReady) return
         if (flags == PTRFLAGS_MOVE) {
+            // The cursor overlay is drawn in render(); re-render so the
+            // cursor visibly follows every move (draw() is debounced, so
+            // rapid moves collapse to one render per frame).
+            draw()
             lastMovePending?.takeIf { it.owner === a }?.let { it.x = x; it.y = y; return }
             val move = PendingMove(a, x, y)
             lastMovePending = move
@@ -406,6 +425,10 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                         else {
                             authAttempted = false
                             resizeFailure = null
+                            connectStartedAt = SystemClock.elapsedRealtime()
+                            connectPhase = "creating"
+                            firstFrameLogged = false
+                            Log.d("AceRdp", "connect: creating session")
                             val next = Attempt(host, port, user, password)
                             touched = false
                             attempt = next
@@ -483,7 +506,7 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
     private fun snapshot() = mapOf("connected" to (state == "connected"), "h264" to h264,
         "loadError" to loadError, "widthPx" to widthPx, "heightPx" to heightPx,
         "state" to state, "error" to error, "authAttempted" to authAttempted,
-        "resizeFailure" to resizeFailure)
+        "resizeFailure" to resizeFailure, "phase" to connectPhase)
     // Shared state and framebuffer copies use lock; Canvas access runs outside it.
     private fun change(value: String, reason: String? = null) {
         state = value; error = reason
@@ -500,6 +523,15 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
             if (disposed || !surfaceReady) return
             bitmap?.copy(bitmap!!.config ?: Bitmap.Config.ARGB_8888, false)
         }
+        // Cursor position/shape snapshot (under lock). The pointer bitmap
+        // reference is only replaced, never recycled, so using it outside
+        // the lock is safe.
+        var cursorX = 0; var cursorY = 0; var pointer: Bitmap? = null
+        var hotX = 0; var hotY = 0
+        synchronized(lock) {
+            cursorX = lastX; cursorY = lastY
+            pointer = pointerBitmap; hotX = pointerHotX; hotY = pointerHotY
+        }
         if (!surface.holder.surface.isValid) { frame?.recycle(); return }
         try {
             val canvas = surface.holder.lockCanvas() ?: return
@@ -508,13 +540,54 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                 frame?.let {
                     val scale = minOf(canvas.width.toFloat() / it.width, canvas.height.toFloat() / it.height)
                     val w = it.width * scale; val h = it.height * scale
-                    canvas.drawBitmap(it, null, RectF((canvas.width-w)/2, (canvas.height-h)/2,
-                        (canvas.width+w)/2, (canvas.height+h)/2), null)
+                    val left = (canvas.width - w) / 2; val top = (canvas.height - h) / 2
+                    canvas.drawBitmap(it, null, RectF(left, top, left + w, top + h), null)
+                    // Remote cursor overlay: the pointer shape is not part of
+                    // the framebuffer (FreeRDP sends it via OnPointerSet),
+                    // so draw it here at the last known cursor position.
+                    // Without a shape (default pointer / none yet), draw a
+                    // small fallback arrow so the cursor is always visible.
+                    val cx = left + cursorX * scale
+                    val cy = top + cursorY * scale
+                    if (pointer != null) {
+                        val pw = pointer.width * scale; val ph = pointer.height * scale
+                        canvas.drawBitmap(pointer, null,
+                            RectF(cx - hotX * scale, cy - hotY * scale,
+                                cx - hotX * scale + pw, cy - hotY * scale + ph), null)
+                    } else {
+                        drawDefaultCursor(canvas, cx, cy)
+                    }
                 }
             } finally { surface.holder.unlockCanvasAndPost(canvas) }
         } catch (_: IllegalArgumentException) { /* Surface may be removed by Android. */ }
           catch (_: IllegalStateException) { /* Wait for surfaceCreated. */ }
         finally { frame?.recycle() }
+    }
+
+    // Default remote cursor: a small white arrow with a black outline, drawn
+    // when FreeRDP has not sent a pointer shape (default pointer / none yet).
+    // Fixed surface size so it stays visible at any framebuffer resolution.
+    private val cursorArrowFill = Paint().apply {
+        color = Color.WHITE; style = Paint.Style.FILL; isAntiAlias = true
+    }
+    private val cursorArrowOutline = Paint().apply {
+        color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 2f
+        strokeJoin = Paint.Join.ROUND; isAntiAlias = true
+    }
+    private fun drawDefaultCursor(canvas: Canvas, x: Float, y: Float) {
+        val s = 26f
+        val arrow = Path().apply {
+            moveTo(x, y)
+            lineTo(x, y + s)
+            lineTo(x + s * 0.28f, y + s * 0.72f)
+            lineTo(x + s * 0.42f, y + s * 1.05f)
+            lineTo(x + s * 0.55f, y + s)
+            lineTo(x + s * 0.4f, y + s * 0.68f)
+            lineTo(x + s * 0.65f, y + s * 0.68f)
+            close()
+        }
+        canvas.drawPath(arrow, cursorArrowOutline)
+        canvas.drawPath(arrow, cursorArrowFill)
     }
     override fun surfaceCreated(holder: SurfaceHolder) = synchronized(lock) { surfaceReady = true; draw() }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = synchronized(lock) {
@@ -536,7 +609,7 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         attempt?.let { a ->
             resizeGeneration++; main.removeCallbacks(resizeTask)
             a.stopping = true; a.clearCredentials(); a.session?.setUIEventListener(null)
-            bitmap = null; draw()
+            bitmap = null; pointerBitmap = null; draw()
             // Serialize with configuration/start; never free a still-connecting worker.
             executor.execute { synchronized(lock) {
                 if (attempt === a && !a.terminal && a.handle != 0L) {
@@ -617,6 +690,8 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                 }
                 bookmark = b
                 val s = GlobalApp.createSession(b, context.applicationContext)
+                Log.d("AceRdp", "connect: session created +" +
+                    (SystemClock.elapsedRealtime() - connectStartedAt) + "ms")
                 session = s; handle = s.getInstance()
                 if (handle == 0L) { finish("failed", "Không tạo được phiên FreeRDP"); return@synchronized }
                 RdpEvents.sessions[handle] = this
@@ -624,8 +699,12 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                 if (!LibFreeRDP.setConnectionInfo(context.applicationContext, handle, b)) {
                     finish("failed", "FreeRDP từ chối cấu hình"); return@synchronized
                 }
+                Log.d("AceRdp", "connect: connection info set +" +
+                    (SystemClock.elapsedRealtime() - connectStartedAt) + "ms")
                 b.setPassword("") // Native settings now own their in-memory copy.
                 if (!LibFreeRDP.connect(handle)) finish("failed", "Không khởi động được kết nối")
+                Log.d("AceRdp", "connect: connect() called +" +
+                    (SystemClock.elapsedRealtime() - connectStartedAt) + "ms")
             } catch (_: LinkageError) { finish("failed", "Không tải được FreeRDP") }
               catch (_: RuntimeException) { finish("failed", "Không khởi tạo được kết nối") }
         }
@@ -639,7 +718,7 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                 synchronized(lock) {
                     session = null; bookmark = null
                     if (attempt === this) {
-                        attempt = null; bitmap = null; draw()
+                        attempt = null; bitmap = null; pointerBitmap = null; draw()
                         if (!disposed) change(if (stopping) "disconnected" else value,
                             if (stopping) null else reason)
                     }
@@ -647,10 +726,20 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                 }
             }
         }
-        override fun OnPreConnect(instance: Long) = synchronized(lock) { if (valid() && instance == handle) change("connecting") }
+        override fun OnPreConnect(instance: Long) = synchronized(lock) {
+            if (valid() && instance == handle) {
+                connectPhase = "connecting"
+                Log.d("AceRdp", "connect: pre-connect +" +
+                    (SystemClock.elapsedRealtime() - connectStartedAt) + "ms")
+                change("connecting")
+            }
+        }
         override fun OnConnectionSuccess(instance: Long) = synchronized(lock) {
             if (instance != handle || terminal || attempt !== this) return@synchronized
             connected = true; connectedAt = SystemClock.uptimeMillis(); clearCredentials()
+            connectPhase = ""
+            Log.d("AceRdp", "connect: success +" +
+                (SystemClock.elapsedRealtime() - connectStartedAt) + "ms")
             if (disposed || stopping) executor.execute { synchronized(lock) {
                 if (!terminal && attempt === this) LibFreeRDP.disconnect(instance)
             } }
@@ -667,6 +756,10 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         override fun OnAuthenticate(username: StringBuilder, domain: StringBuilder, password: StringBuilder): Boolean = synchronized(lock) {
             if (!valid()) return@synchronized false
             authAttempted = true
+            connectPhase = "auth"
+            Log.d("AceRdp", "connect: NLA auth +" +
+                (SystemClock.elapsedRealtime() - connectStartedAt) + "ms")
+            change("connecting")
             val u = this.username ?: return@synchronized false
             val p = this.password ?: return@synchronized false
             username.setLength(0); username.append(u); domain.setLength(0)
@@ -685,6 +778,11 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                 if (!touched || lastX >= width || lastY >= height) {
                     lastX = width / 2; lastY = height / 2
                 }
+                if (bitmap == null && !firstFrameLogged) {
+                    firstFrameLogged = true
+                    Log.d("AceRdp", "connect: first frame +" +
+                        (SystemClock.elapsedRealtime() - connectStartedAt) + "ms")
+                }
                 bitmap = Bitmap.createBitmap(width, height, if (bpp == 16) Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888)
                 session?.setSurface(BitmapDrawable(context.resources, bitmap))
                 draw()
@@ -697,9 +795,23 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         }
         override fun OnRemoteClipboardChanged(data: String) {}
         override fun OnRemoteClipboardImageChanged(data: ByteArray) {}
-        override fun OnPointerSet(pixels: IntArray, width: Int, height: Int, hotX: Int, hotY: Int) {}
-        override fun OnPointerSetNull() {}
-        override fun OnPointerSetDefault() {}
+        override fun OnPointerSet(pixels: IntArray, width: Int, height: Int, hotX: Int, hotY: Int) = synchronized(lock) {
+            // The remote cursor shape: stored and drawn by render() as an
+            // overlay at the last known cursor position. Without it the
+            // cursor would be invisible (it is not part of the framebuffer).
+            if (valid() && width > 0 && height > 0 && pixels.size >= width * height) {
+                pointerBitmap = Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+                pointerHotX = hotX; pointerHotY = hotY
+                draw()
+            }
+        }
+        override fun OnPointerSetNull() = synchronized(lock) {
+            pointerBitmap = null; draw()
+        }
+        override fun OnPointerSetDefault() = synchronized(lock) {
+            // No custom shape: render() draws the fallback arrow instead.
+            pointerBitmap = null; draw()
+        }
         override fun OnRailWindowUpdate(windowId: Long, width: Int, height: Int, pixels: IntArray) {}
         override fun OnRailWindowMove(windowId: Long, x: Int, y: Int, w: Int, h: Int) {}
         override fun OnRailWindowHide(windowId: Long) {}

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:ui' as ui;
 import 'package:ace_remote/agent.dart';
 import 'package:ace_remote/main.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -15,6 +16,14 @@ int stateMonitor(WidgetTester tester) {
 }
 
 void main() {
+  // Home loads the saved connections (SharedPreferences + secure storage),
+  // so the mocks must be set or _reload() never completes and the loading
+  // spinner spins forever (pumpAndSettle times out).
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    FlutterSecureStorage.setMockInitialValues({});
+  });
+
   testWidgets('Home shows only the supported Windows PC', (tester) async {
     final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
     addTearDown(agent.dispose);
@@ -750,7 +759,7 @@ void main() {
     await tester.pump();
     await drag.moveBy(const Offset(30, 0));
     await tester.pump();
-    expect(color('Q'), const Color(0xff292b30));
+    expect(color('Q'), const Color(0xff32353c));
     await drag.up();
     await tester.pumpWidget(const SizedBox());
   });

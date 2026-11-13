@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'agent.dart';
+import 'rdp_connections.dart';
 import 'rdp_input.dart';
 import 'rdp_surface.dart';
 
@@ -149,83 +150,383 @@ class Home extends StatefulWidget {
 }
 
 class _HomeState extends State<Home> {
-  String status = 'Đang kiểm tra…';
-  bool online = false, checking = false;
+  // Step 23, item 6: Home is now the saved-connections list, like the
+  // "PC Connections" section of Microsoft Remote Desktop. Tapping a card
+  // connects right away with its saved host/port/user/pass; "+" adds a
+  // connection. Long-press a card (redesign 04:03) opens a context menu —
+  // Connect / Favorite / Edit / Delete, like the sample — and Edit opens a
+  // full screen that configures the connection AND its trackpad/keyboard
+  // settings. The old single agent card is gone: in the RDP build its
+  // "Kết nối" button already opened the RDP page, and the agent address is
+  // still editable (and testable) in Settings.
+  final _store = RdpConnectionStore();
+  List<RdpConnection>? _connections;
+  String? _error;
+
   @override
   void initState() {
     super.initState();
-    check();
+    _reload();
   }
 
-  Future<void> check() async {
-    if (checking) {
-      return;
-    }
-    setState(() => checking = true);
+  Future<void> _reload() async {
     try {
-      await widget.agent.health();
+      final connections = await _store.load();
       if (mounted) {
         setState(() {
-          online = true;
-          status = 'Trực tuyến';
+          _connections = connections;
+          _error = null;
         });
       }
-    } catch (e) {
+    } catch (_) {
+      // Show the list area (empty) instead of spinning forever.
       if (mounted) {
         setState(() {
-          online = false;
-          status = 'Ngoại tuyến • ${clean(e)}';
+          _connections = [];
+          _error = 'Không mở được danh sách kết nối.';
         });
-      }
-    } finally {
-      if (mounted) {
-        setState(() => checking = false);
       }
     }
   }
+
+  void _open(RdpConnection connection) {
+    Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+            builder: (_) => RemotePage(
+                agent: widget.agent,
+                pollMs: widget.pollMs,
+                settings: widget.settings,
+                rdpMode: true,
+                rdpConnection: connection)));
+  }
+
+  /// Add/edit page: name, host, port, username and password plus the
+  /// per-connection trackpad/keyboard settings are configured there
+  /// (redesign 04:03 — a full screen, not a dialog). The password field is
+  /// prefilled with the saved password when editing, so saving keeps it
+  /// unless the user changes it.
+  Future<void> _showEditor({RdpConnection? existing}) async {
+    final saved = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute<bool>(
+            builder: (_) =>
+                _ConnectionEditorPage(existing: existing, store: _store)));
+    if (saved == true) await _reload();
+  }
+
+  /// Long-press context menu on a card (redesign 04:03, after the Microsoft
+  /// Remote Desktop sample): Connect / Favorite / Edit / Delete, each with
+  /// an icon + label. Anchored at the card so it opens next to the finger.
+  Future<void> _showConnectionMenu(
+      BuildContext cardContext, RdpConnection connection) async {
+    final box = cardContext.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(cardContext).context.findRenderObject() as RenderBox?;
+    final position = box == null || overlay == null
+        ? const RelativeRect.fromLTRB(0, 0, 0, 0)
+        : RelativeRect.fromRect(
+            box.localToGlobal(Offset.zero) & box.size,
+            Offset.zero & overlay.size);
+    final choice = await showMenu<String>(
+        context: cardContext,
+        position: position,
+        items: [
+          const PopupMenuItem(
+              value: 'connect',
+              child: Row(children: [
+                Icon(Icons.play_circle_outline),
+                SizedBox(width: 12),
+                Text('Connect'),
+              ])),
+          PopupMenuItem(
+              value: 'favorite',
+              child: Row(children: [
+                Icon(connection.favorite
+                    ? Icons.star
+                    : Icons.star_outline),
+                const SizedBox(width: 12),
+                Text(connection.favorite ? 'Bỏ yêu thích' : 'Favorite'),
+              ])),
+          const PopupMenuItem(
+              value: 'edit',
+              child: Row(children: [
+                Icon(Icons.edit_outlined),
+                SizedBox(width: 12),
+                Text('Edit'),
+              ])),
+          const PopupMenuItem(
+              value: 'delete',
+              child: Row(children: [
+                Icon(Icons.delete_outline),
+                SizedBox(width: 12),
+                Text('Delete'),
+              ])),
+        ]);
+    switch (choice) {
+      case 'connect':
+        _open(connection);
+      case 'favorite':
+        await _store.update(connection.copyWith(favorite: !connection.favorite));
+        await _reload();
+      case 'edit':
+        await _showEditor(existing: connection);
+      case 'delete':
+        await _confirmDelete(connection);
+    }
+  }
+
+  Future<void> _confirmDelete(RdpConnection connection) async {
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+                title: const Text('Xóa kết nối?'),
+                content: Text(
+                    'Xóa "${connection.name}" (${connection.address})? Mật khẩu đã lưu của kết nối này cũng bị xóa.'),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext, false),
+                      child: const Text('Hủy')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(dialogContext, true),
+                      child: const Text('Xóa')),
+                ]));
+    if (confirmed == true) {
+      await _store.remove(connection.id);
+      await _reload();
+    }
+  }
+
+  Widget _connectionCard(RdpConnection connection) => Builder(
+      builder: (cardContext) => Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+          onTap: () => _open(connection),
+          // Redesign 04:03: hold the card to open the Connect / Favorite /
+          // Edit / Delete menu (like the Microsoft Remote Desktop sample);
+          // the card itself stays clean, with no buttons on it.
+          onLongPress: () => _showConnectionMenu(cardContext, connection),
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Device-card header (step 23, after the Microsoft Remote
+                // Desktop sample): a gradient band in the app teal/blue
+                // with the machine name on it, like the sample's device
+                // card with its Windows 11 wallpaper header.
+                Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+                    decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                            colors: [Color(0xff1d7f73), Color(0xff2b6cb0)],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight)),
+                    child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(children: [
+                            Expanded(
+                                child: Text(connection.name,
+                                    style: const TextStyle(
+                                        fontSize: 20,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.white))),
+                            if (connection.favorite)
+                              const Icon(Icons.star,
+                                  size: 20, color: Colors.amber),
+                          ]),
+                          Text(connection.address,
+                              style: const TextStyle(
+                                  fontSize: 13, color: Colors.white70)),
+                        ])),
+                Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                    child: Row(children: [
+                      const Icon(Icons.person_outline, size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                          child: Text(connection.username.isEmpty
+                              ? 'Chưa có tài khoản — bấm để nhập'
+                              : connection.username)),
+                    ])),
+              ]))));
 
   @override
   Widget build(BuildContext context) => Scaffold(
       appBar: AppBar(title: const Text('Ace Remote'), actions: [
         IconButton(
+            tooltip: 'Thêm kết nối',
+            icon: const Icon(Icons.add),
+            onPressed: () => _showEditor()),
+        IconButton(
             tooltip: 'Cài đặt',
-            icon: const Icon(Icons.settings),
+            icon: const Icon(Icons.settings_outlined),
             onPressed: () async {
               await Navigator.push(context,
                   MaterialPageRoute<void>(builder: (_) => widget.settings()));
-              check();
             })
       ]),
-      body: ListView(padding: const EdgeInsets.all(16), children: [
-        if (widget.agent.mock)
-          const Text('CHẾ ĐỘ MÔ PHỎNG • Không gửi lệnh tới PC'),
-        Card(
-            child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('ace — Windows',
-                          style: TextStyle(fontSize: 24)),
-                      Text(widget.agent.baseUrl),
-                      Text(status),
-                      Wrap(spacing: 12, children: [
-                        FilledButton(
-                            onPressed: online && !checking
-                                ? () => Navigator.push(
-                                    context,
-                                    MaterialPageRoute<void>(
-                                        builder: (_) => RemotePage(
-                                            agent: widget.agent,
-                                            pollMs: widget.pollMs,
-                                            settings: widget.settings)))
-                                : null,
-                            child: const Text('Kết nối')),
-                        OutlinedButton(
-                            onPressed: checking ? null : check,
-                            child: const Text('Thử lại'))
-                      ])
-                    ]))),
+      body: _connections == null
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(padding: const EdgeInsets.all(16), children: [
+              if (widget.agent.mock)
+                const Text('CHẾ ĐỘ MÔ PHỎNG • Không gửi lệnh tới PC'),
+              // Section header, like the sample's "PC Connections".
+              const Padding(
+                  padding: EdgeInsets.fromLTRB(4, 4, 4, 12),
+                  child: Text('Kết nối đã lưu',
+                      style: TextStyle(
+                          fontSize: 20, fontWeight: FontWeight.w600))),
+              if (_connections!.isEmpty)
+                const Card(
+                    child: Padding(
+                        padding: EdgeInsets.all(20),
+                        child: Text(
+                            'Chưa có kết nối nào. Bấm + để thêm kết nối mới.'))),
+              for (final connection in _connections!)
+                Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _connectionCard(connection)),
+              if (_error != null) Text(_error!),
+            ]));
+}
+
+/// Add/edit connection page (step 23 redesign, 04:03 — a full screen, not a
+/// dialog). Configures the connection (name, host, port, username, password)
+/// AND its per-connection settings: trackpad mode and keyboard visibility.
+/// While the saved password is still loading for an edit, Save stays
+/// disabled so it cannot blank the stored password.
+class _ConnectionEditorPage extends StatefulWidget {
+  const _ConnectionEditorPage({this.existing, required this.store});
+  final RdpConnection? existing;
+  final RdpConnectionStore store;
+  @override
+  State<_ConnectionEditorPage> createState() => _ConnectionEditorPageState();
+}
+
+class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
+  late final name = TextEditingController(text: widget.existing?.name ?? '');
+  late final host = TextEditingController(text: widget.existing?.host ?? '');
+  late final port = TextEditingController(
+      text: widget.existing == null ? '3389' : widget.existing!.port.toString());
+  late final username =
+      TextEditingController(text: widget.existing?.username ?? '');
+  late final password = TextEditingController();
+  late bool trackpadMode = widget.existing?.trackpadMode ?? false;
+  late bool keyboardVisible = widget.existing?.keyboardVisible ?? true;
+  String? error;
+  bool loadingPassword = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.existing != null) {
+      loadingPassword = true;
+      widget.store.passwordFor(widget.existing!.id).then((saved) {
+        if (mounted) {
+          setState(() {
+            password.text = saved;
+            loadingPassword = false;
+          });
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final field in [name, host, port, username, password]) {
+      field.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final portNumber = int.tryParse(port.text.trim());
+    if (name.text.trim().isEmpty ||
+        host.text.trim().isEmpty ||
+        portNumber == null ||
+        portNumber < 1 ||
+        portNumber > 65535) {
+      setState(() => error = 'Nhập đủ tên, host và port (1–65535).');
+      return;
+    }
+    final existing = widget.existing;
+    if (existing == null) {
+      await widget.store.add(
+          name: name.text.trim(),
+          host: host.text.trim(),
+          port: portNumber,
+          username: username.text.trim(),
+          password: password.text,
+          trackpadMode: trackpadMode,
+          keyboardVisible: keyboardVisible);
+    } else {
+      await widget.store.update(
+          existing.copyWith(
+              name: name.text.trim(),
+              host: host.text.trim(),
+              port: portNumber,
+              username: username.text.trim(),
+              trackpadMode: trackpadMode,
+              keyboardVisible: keyboardVisible),
+          password: password.text);
+    }
+    if (mounted) Navigator.pop(context, true);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+      appBar: AppBar(
+          title: Text(widget.existing == null ? 'Thêm kết nối' : 'Sửa kết nối')),
+      body: ListView(padding: const EdgeInsets.all(20), children: [
+        TextField(
+            key: const ValueKey('connection-name'),
+            controller: name,
+            decoration: const InputDecoration(labelText: 'Tên hiển thị'),
+            textCapitalization: TextCapitalization.words),
+        TextField(
+            key: const ValueKey('connection-host'),
+            controller: host,
+            decoration:
+                const InputDecoration(labelText: 'Host (IP hoặc tên máy)'),
+            keyboardType: TextInputType.url),
+        TextField(
+            key: const ValueKey('connection-port'),
+            controller: port,
+            decoration: const InputDecoration(labelText: 'Port'),
+            keyboardType: TextInputType.number),
+        TextField(
+            key: const ValueKey('connection-username'),
+            controller: username,
+            decoration: const InputDecoration(labelText: 'Username')),
+        TextField(
+            key: const ValueKey('connection-password'),
+            controller: password,
+            decoration: const InputDecoration(labelText: 'Mật khẩu'),
+            obscureText: true),
+        const SizedBox(height: 16),
+        SwitchListTile(
+            title: const Text('Chế độ Trackpad'),
+            subtitle: const Text(
+                'Bật: lướt trên bàn phím để di chuột. Tắt: chạm trực tiếp vào màn hình.'),
+            value: trackpadMode,
+            onChanged: (v) => setState(() => trackpadMode = v)),
+        SwitchListTile(
+            title: const Text('Hiện bàn phím'),
+            subtitle: const Text(
+                'Tắt: màn hình remote chiếm toàn bộ màn hình khi kết nối.'),
+            value: keyboardVisible,
+            onChanged: (v) => setState(() => keyboardVisible = v)),
+        if (error != null)
+          Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(error!,
+                  style: const TextStyle(color: Colors.red))),
+        const SizedBox(height: 16),
+        FilledButton(
+            onPressed: loadingPassword ? null : _save,
+            child: const Text('Lưu')),
       ]));
 }
 
@@ -352,9 +653,13 @@ class RemotePage extends StatefulWidget {
       required this.agent,
       required this.pollMs,
       this.settings,
+      this.rdpConnection,
       this.rdpMode = rdpPrototype});
   final Widget Function()? settings;
   final bool rdpMode;
+  // Step 23, item 6: the saved connection tapped on Home; its host/port and
+  // stored user/pass are used to connect right away.
+  final RdpConnection? rdpConnection;
   final Agent agent;
   final int Function() pollMs;
   @override
@@ -383,6 +688,25 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   final rdpController = RdpController();
   Future<void> rdpQueue = Future.value();
   final Set<String> modifiers = {};
+  // Caps Lock state tracked by the app: toggled on each Caps press. The
+  // server flips its own Caps Lock state on every VK_CAPITAL press, so this
+  // stays in sync as long as Caps is only pressed from this on-screen
+  // keyboard; pressing Caps Lock on a physical keyboard will not update it.
+  bool capsLockOn = false;
+  // Swipe-to-move on the RDP keyboard (step 23): a drag across the keys
+  // moves the cursor relatively instead of typing; a quick tap still types
+  // the key. Works in both touch and trackpad modes so the mouse is always
+  // reachable from the keyboard. kbSuppressKey tells press() to ignore the
+  // tap that ends a swipe / two-finger gesture (the tap recognizer may
+  // still fire for short drags); it is cleared on the next pointer down.
+  final Map<int, Offset> kbSwipePoints = {};
+  double kbSwipeDistance = 0;
+  int kbSwipeDownTime = 0;
+  bool kbSwipeTwoFinger = false;
+  double kbSwipeScrollAccum = 0;
+  double kbSwipeTwoFingerTravel = 0;
+  Offset kbSwipeTwoFingerCenter = Offset.zero;
+  bool kbSuppressKey = false;
   Future<void> queue = Future.value();
   int pending = 0;
   int commandEpoch = 0;
@@ -727,7 +1051,19 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   void rdpKey(String key) {
     if (!rdpController.isConnected) return;
-    if (key == 'Caps') key = 'Shift';
+    // Caps Lock is a real toggle: one VK_CAPITAL press flips the Windows
+    // Caps Lock state. It is NOT a one-shot modifier, so it never joins
+    // `modifiers` and is never cleared after the next key.
+    if (key == 'Caps') {
+      final vk = rdpVirtualKey(key);
+      if (vk == null) return;
+      setState(() => capsLockOn = !capsLockOn);
+      rdpQueue = rdpQueue.then((_) async {
+        await rdpController.sendKey(vk, true);
+        await rdpController.sendKey(vk, false);
+      });
+      return;
+    }
     final vk = rdpVirtualKey(key);
     if (vk == null) return;
     if (const ['Win', 'Ctrl', 'Alt', 'Shift'].contains(key)) {
@@ -761,10 +1097,21 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   Widget laptopKey(String label,
       {double units = 1, String? command, bool modifier = false}) {
-    final selected = modifier && modifiers.contains(command ?? label);
+    final isCaps = label == 'Caps';
+    // In RDP mode the Caps key shows the app-tracked Caps Lock state; in
+    // agent mode Caps still arms Shift one-shot, so it highlights while
+    // Shift is armed, as before.
+    final selected = modifier &&
+        (isCaps
+            ? (widget.rdpMode ? capsLockOn : modifiers.contains('Shift'))
+            : modifiers.contains(command ?? label));
     void press() {
       if (widget.rdpMode) {
-        rdpKey(command ?? label);
+        // A swipe / two-finger gesture on the keyboard must not type a key.
+        if (kbSuppressKey) { kbSuppressKey = false; return; }
+        // Caps must reach rdpKey as 'Caps' (a real Caps Lock toggle), even
+        // though this widget carries command 'Shift' for agent mode.
+        rdpKey(isCaps ? 'Caps' : (command ?? label));
         return;
       }
       if (label == 'Click trái' || label == 'Click phải') {
@@ -807,13 +1154,16 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                 child: Container(
                     key: target,
                     decoration: BoxDecoration(
+                        // Modern key look (step 23): larger radius, lighter
+                        // key surface with a softer border; an armed
+                        // modifier / Caps Lock on uses the app teal accent.
                         color: pressedLabel == label
                             ? const Color(0xff8b929e)
                             : selected
-                                ? const Color(0xff505762)
-                                : const Color(0xff292b30),
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: const Color(0xff3c3e43))),
+                                ? const Color(0xff2bb3a3)
+                                : const Color(0xff32353c),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xff4a4d55))),
                     child: Center(
                         child: Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 2),
@@ -884,18 +1234,92 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
             ])));
       });
 
-  /// Bottom-half trackpad for RDP trackpad mode. Drag moves the cursor
-  /// relatively, a quick tap clicks left at the cursor, a two-finger tap
-  /// clicks right, and a two-finger drag scrolls. No left-button hold while
-  /// dragging (trackpad move only), unlike absolute touch on the remote
-  /// screen. Calls are fire-and-forget; native coalesces MOVE events.
-  Widget trackpadPanel() => RdpTrackpad(
-        onMove: (delta) => unawaited(rdpController.moveRelative(delta)),
-        onTap: () => unawaited(rdpController.clickAtLastPosition('left')),
-        onTwoFingerTap: () =>
-            unawaited(rdpController.clickAtLastPosition('right')),
-        onScroll: (down) => unawaited(rdpController.scrollWheel(down)),
-      );
+  /// Swipe-to-move wrapper for the RDP keyboard (step 23). The keyboard
+  /// stays visible in both touch and trackpad modes; a drag across the keys
+  /// (more than 12 logical px) moves the cursor relatively and suppresses
+  /// the key under the finger, a quick tap still types the key, a
+  /// two-finger tap clicks right, and a two-finger drag scrolls (one notch
+  /// per 48 logical px). Deltas are reported in surface physical pixels
+  /// (logical px x devicePixelRatio); native converts them to framebuffer
+  /// pixels with the trackpad sensitivity. This is a Listener, not a
+  /// gesture detector, so key taps keep working: the tap recognizer fires
+  /// press() only for real taps, and kbSuppressKey covers the short drags
+  /// that still count as taps.
+  Widget keyboardSwipe(Widget child) {
+    final dpr = MediaQuery.of(context).devicePixelRatio;
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (e) {
+        kbSuppressKey = false;
+        if (kbSwipePoints.isEmpty) {
+          kbSwipeDistance = 0;
+          kbSwipeTwoFinger = false;
+          kbSwipeScrollAccum = 0;
+          kbSwipeTwoFingerTravel = 0;
+          kbSwipeDownTime = e.timeStamp.inMilliseconds;
+        }
+        kbSwipePoints[e.pointer] = e.localPosition;
+        if (kbSwipePoints.length == 2) {
+          kbSwipeTwoFinger = true;
+          kbSwipeTwoFingerCenter =
+              (kbSwipePoints.values.first + kbSwipePoints.values.last) / 2;
+          kbSwipeScrollAccum = 0;
+          kbSwipeTwoFingerTravel = 0;
+          // Two fingers on keys must not type either key.
+          kbSuppressKey = true;
+        }
+      },
+      onPointerMove: (e) {
+        final old = kbSwipePoints[e.pointer];
+        if (old == null) return;
+        final delta = e.localPosition - old;
+        kbSwipePoints[e.pointer] = e.localPosition;
+        if (kbSwipePoints.length == 2) {
+          final center =
+              (kbSwipePoints.values.first + kbSwipePoints.values.last) / 2;
+          final centerDelta = center - kbSwipeTwoFingerCenter;
+          kbSwipeTwoFingerCenter = center;
+          kbSwipeTwoFingerTravel += centerDelta.distance;
+          kbSwipeScrollAccum += centerDelta.dy;
+          while (kbSwipeScrollAccum.abs() >= 48) {
+            unawaited(rdpController.scrollWheel(kbSwipeScrollAccum > 0));
+            kbSwipeScrollAccum += kbSwipeScrollAccum > 0 ? -48 : 48;
+          }
+        } else if (kbSwipePoints.length == 1 && !kbSwipeTwoFinger) {
+          kbSwipeDistance += delta.distance;
+          if (kbSwipeDistance > 12) {
+            kbSuppressKey = true;
+            unawaited(rdpController.moveRelative(delta * dpr));
+          }
+        }
+      },
+      onPointerUp: (e) {
+        kbSwipePoints.remove(e.pointer);
+        if (kbSwipePoints.isEmpty) {
+          final duration = e.timeStamp.inMilliseconds - kbSwipeDownTime;
+          if (kbSwipeTwoFinger) {
+            if (kbSwipeTwoFingerTravel < 48 &&
+                kbSwipeScrollAccum.abs() < 48 &&
+                duration < 500) {
+              unawaited(rdpController.clickAtLastPosition('right'));
+            }
+          }
+          kbSwipeTwoFinger = false;
+          kbSwipeDistance = 0;
+          kbSwipeScrollAccum = 0;
+          kbSwipeTwoFingerTravel = 0;
+        }
+      },
+      onPointerCancel: (_) {
+        kbSwipePoints.clear();
+        kbSwipeTwoFinger = false;
+        kbSwipeDistance = 0;
+        kbSwipeScrollAccum = 0;
+        kbSwipeTwoFingerTravel = 0;
+      },
+      child: child,
+    );
+  }
 
   Widget laptopDeck(Widget child) {
     return Theme(
@@ -972,32 +1396,43 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  // Step 23 redesign (04:03): the remote screen has no buttons at all, so
+  // Android Back (or the swipe-back gesture) is the way out: it disconnects
+  // the RDP session (in RDP mode) and returns to Home. canPop stays true so
+  // Back never gets stuck, and never exits the app by itself (Home is
+  // underneath this route).
+  Widget build(BuildContext context) => PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop && widget.rdpMode) {
+          unawaited(rdpController.disconnect());
+        }
+      },
+      child: Scaffold(
         body: LayoutBuilder(builder: (context, box) {
           if (widget.rdpMode) {
-            // The bottom half follows the RDP controller: keyboard or
-            // trackpad (trackpad mode), hidden entirely (keyboard hidden) so
-            // the remote screen fills the whole page. Switching never drops
-            // the RDP session and never resets the cursor.
+            // The bottom half is always the keyboard: in trackpad mode the
+            // keys stay visible and a swipe across them moves the cursor
+            // (step 23), so the mouse is reachable without losing the keys.
+            // The keyboard can be hidden entirely so the remote screen
+            // fills the whole page. Switching never drops the RDP session
+            // and never resets the cursor.
             return ValueListenableBuilder<bool>(
-              valueListenable: rdpController.trackpadMode,
-              builder: (context, isTrackpad, _) => ValueListenableBuilder<bool>(
-                valueListenable: rdpController.keyboardVisible,
-                builder: (context, kbVisible, _) => Column(children: [
+              valueListenable: rdpController.keyboardVisible,
+              builder: (context, kbVisible, _) => Column(children: [
+                Expanded(
+                    child: SizedBox(
+                        key: const ValueKey('remote-half'),
+                        child: RdpConnectionPane(
+                            controller: rdpController,
+                            initialConnection: widget.rdpConnection))),
+                if (kbVisible)
                   Expanded(
                       child: SizedBox(
-                          key: const ValueKey('remote-half'),
+                          key: const ValueKey('keyboard-half'),
                           child:
-                              RdpConnectionPane(controller: rdpController))),
-                  if (kbVisible)
-                    Expanded(
-                        child: SizedBox(
-                            key: const ValueKey('keyboard-half'),
-                            child: laptopDeck(isTrackpad
-                                ? trackpadPanel()
-                                : keyboardPanel()))),
-                ]),
-              ),
+                              laptopDeck(keyboardSwipe(keyboardPanel())))),
+              ]),
             );
           }
           final d = display;
@@ -1091,121 +1526,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               ? SingleChildScrollView(child: content)
               : content;
         }),
-      );
-}
-
-/// Bottom-half trackpad for RDP trackpad mode (shown instead of the keyboard).
-/// Drag moves the cursor relatively (no button held), a quick tap clicks left
-/// at the cursor, a two-finger tap clicks right, and a two-finger drag scrolls
-/// (one notch per 48 logical px). Deltas are reported in surface physical
-/// pixels (logical pixels x devicePixelRatio); native converts them to
-/// framebuffer pixels with the trackpad sensitivity. No long-press gesture:
-/// two-finger tap is the right-click here.
-class RdpTrackpad extends StatefulWidget {
-  const RdpTrackpad(
-      {super.key,
-      required this.onMove,
-      required this.onTap,
-      required this.onTwoFingerTap,
-      required this.onScroll});
-  final void Function(Offset deltaPhysicalPx) onMove;
-  final VoidCallback onTap;
-  final VoidCallback onTwoFingerTap;
-  final void Function(bool down) onScroll;
-  @override
-  State<RdpTrackpad> createState() => _RdpTrackpadState();
-}
-
-class _RdpTrackpadState extends State<RdpTrackpad> {
-  final Map<int, Offset> points = {};
-  double distance = 0;
-  int downTime = 0;
-  bool twoFinger = false;
-  double scrollAccum = 0;
-  double twoFingerTravel = 0;
-  Offset twoFingerCenter = Offset.zero;
-
-  @override
-  Widget build(BuildContext context) {
-    final dpr = MediaQuery.of(context).devicePixelRatio;
-    return Listener(
-      key: const ValueKey('rdp-trackpad'),
-      behavior: HitTestBehavior.opaque,
-      onPointerDown: (e) {
-        if (points.isEmpty) {
-          distance = 0;
-          twoFinger = false;
-          scrollAccum = 0;
-          twoFingerTravel = 0;
-          downTime = e.timeStamp.inMilliseconds;
-        }
-        points[e.pointer] = e.localPosition;
-        if (points.length == 2) {
-          twoFinger = true;
-          twoFingerCenter = (points.values.first + points.values.last) / 2;
-          scrollAccum = 0;
-          twoFingerTravel = 0;
-        }
-      },
-      onPointerMove: (e) {
-        final old = points[e.pointer];
-        if (old == null) return;
-        final delta = e.localPosition - old;
-        points[e.pointer] = e.localPosition;
-        if (points.length == 2) {
-          final center = (points.values.first + points.values.last) / 2;
-          final centerDelta = center - twoFingerCenter;
-          twoFingerCenter = center;
-          twoFingerTravel += centerDelta.distance;
-          scrollAccum += centerDelta.dy;
-          while (scrollAccum.abs() >= 48) {
-            widget.onScroll(scrollAccum > 0);
-            scrollAccum += scrollAccum > 0 ? -48 : 48;
-          }
-        } else if (points.length == 1 && !twoFinger) {
-          distance += delta.distance;
-          widget.onMove(delta * dpr);
-        }
-      },
-      onPointerUp: (e) {
-        points.remove(e.pointer);
-        if (points.isEmpty) {
-          final duration = e.timeStamp.inMilliseconds - downTime;
-          if (twoFinger) {
-            if (twoFingerTravel < 48 &&
-                scrollAccum.abs() < 48 &&
-                duration < 500) {
-              widget.onTwoFingerTap();
-            }
-          } else if (distance < 12 && duration < 500) {
-            widget.onTap();
-          }
-          twoFinger = false;
-          distance = 0;
-          scrollAccum = 0;
-          twoFingerTravel = 0;
-        }
-      },
-      onPointerCancel: (_) {
-        points.clear();
-        twoFinger = false;
-        distance = 0;
-        scrollAccum = 0;
-        twoFingerTravel = 0;
-      },
-      child: Container(
-        color: const Color(0xff16171a),
-        child: const Center(
-          child: IgnorePointer(
-            child: Text(
-                'Trackpad\nKéo để di chuột • Chạm để click trái\n2 ngón: click phải • kéo để cuộn',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white38, fontSize: 13)),
-          ),
-        ),
       ),
     );
-  }
 }
 
 class KeyboardSurface extends StatefulWidget {

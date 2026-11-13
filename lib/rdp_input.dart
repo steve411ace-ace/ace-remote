@@ -21,7 +21,7 @@ int? rdpVirtualKey(String key) {
     'Enter': 0x0d,
     'Space': 0x20,
     'Shift': 0xa0,
-    'Caps': 0xa0,
+    'Caps': 0x14,
     'Ctrl': 0xa2,
     'Alt': 0xa4,
     'Win': 0x15b,

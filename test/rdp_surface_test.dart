@@ -1,5 +1,6 @@
 import 'package:ace_remote/agent.dart';
 import 'package:ace_remote/main.dart';
+import 'package:ace_remote/rdp_connections.dart';
 import 'package:ace_remote/rdp_surface.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -49,8 +50,11 @@ void main() {
     expect(await storage.read(key: rdpPasswordKey, aOptions: rdpStorageOptions), 'success-secret');
     controller.value = {'state': 'connected', 'resizeFailure': 'DISP unavailable'};
     await tester.pump();
-    expect(find.text('Đã kết nối'), findsOneWidget);
+    // A DISP resize failure must not drop the session: the login form stays
+    // hidden and the remote surface stays up (no buttons on it any more).
+    expect(find.byType(RdpSurface), findsOneWidget);
     expect(find.text('Kết nối lại'), findsNothing);
+    expect(find.text('Kết nối'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     controller.dispose();
   });
@@ -156,6 +160,94 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('Caps Lock toggles with VK_CAPITAL and stays on across keys',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/22');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(22);
+    // attach() re-sends the current touch mode ('mode'); not part of this test.
+    calls.clear();
+    await messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('state', {'state': 'connected'})),
+        (_) {});
+    await tester.pump();
+    final dynamic state = tester.state(find.byType(RemotePage));
+    expect(state.capsLockOn, isFalse);
+    Color? capsColor() => (tester
+            .widget<Container>(find
+                .ancestor(
+                    of: find.text('Caps').first,
+                    matching: find.byType(Container))
+                .first)
+            .decoration as BoxDecoration)
+        .color;
+    Future<void> tap(String label) async {
+      await tester.tap(find.text(label).first);
+      await tester.pumpAndSettle();
+    }
+
+    // First Caps press: one VK_CAPITAL tap, state on, key highlighted.
+    await tap('Caps');
+    expect(calls.map((c) => c.arguments).toList(), [
+      {'vk': 0x14, 'down': true},
+      {'vk': 0x14, 'down': false},
+    ]);
+    expect(state.capsLockOn, isTrue);
+    expect(capsColor(), const Color(0xff2bb3a3));
+    // A letter key does not clear Caps Lock (unlike Shift one-shot).
+    calls.clear();
+    await tap('A');
+    expect(calls.map((c) => c.arguments).toList(), [
+      {'vk': 0x41, 'down': true},
+      {'vk': 0x41, 'down': false},
+    ]);
+    expect(state.capsLockOn, isTrue);
+    expect(capsColor(), const Color(0xff2bb3a3));
+    // Second Caps press: toggle off, highlight gone.
+    calls.clear();
+    await tap('Caps');
+    expect(calls.map((c) => c.arguments).toList(), [
+      {'vk': 0x14, 'down': true},
+      {'vk': 0x14, 'down': false},
+    ]);
+    expect(state.capsLockOn, isFalse);
+    expect(capsColor(), const Color(0xff32353c));
+    // Shift is still a one-shot modifier and does not touch Caps Lock.
+    calls.clear();
+    await tap('Shift');
+    expect(calls, isEmpty);
+    await tap('A');
+    expect(calls.map((c) => c.arguments).toList(), [
+      {'vk': 0xa0, 'down': true},
+      {'vk': 0x41, 'down': true},
+      {'vk': 0x41, 'down': false},
+      {'vk': 0xa0, 'down': false},
+    ]);
+    expect(state.capsLockOn, isFalse);
+    expect(state.modifiers, isEmpty);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('RDP status preserves native physical pixels across resize', (tester) async {
     const channel = MethodChannel('vn.aceremote.app/rdp/15');
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
@@ -246,11 +338,12 @@ void main() {
     await event({'state': 'disconnecting'});
     expect(find.text('Đang ngắt kết nối…'), findsOneWidget);
     await event({'state': 'connected'});
-    expect(find.text('Đã kết nối'), findsOneWidget);
+    // Connected: the login form is hidden and the remote surface is up.
+    // There is no "Đã kết nối" pill and no disconnect button any more
+    // (redesign 04:03); leaving is via Android Back, covered by the
+    // Back test in rdp_connections_test.dart.
+    expect(find.byType(RdpSurface), findsOneWidget);
     expect(find.byKey(const ValueKey('rdp-password')), findsNothing);
-    await tester.tap(find.text('Ngắt kết nối'));
-    await tester.pump();
-    expect(calls.last.method, 'disconnect');
     await event({'state': 'failed', 'error': 'Test failure', 'authAttempted': true});
     expect(find.text('Test failure'), findsOneWidget);
     expect(find.text('Kết nối lại'), findsOneWidget);
@@ -261,12 +354,14 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('connected header auto-hides, reveals, and toggles mode/keyboard', (tester) async {
+  testWidgets('connected remote screen shows no control buttons', (tester) async {
+    // Redesign 04:03: the remote screen has no buttons at all — no mode /
+    // keyboard / disconnect / chevron buttons and no "Đã kết nối" pill.
+    // Trackpad mode and keyboard visibility are per-connection settings from
+    // the Edit screen now, not buttons on the remote screen.
     const channel = MethodChannel('vn.aceremote.app/rdp/23');
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    final calls = <MethodCall>[];
     messenger.setMockMethodCallHandler(channel, (call) async {
-      calls.add(call);
       return call.method == 'status' ? {'state': 'idle'} : null;
     });
     addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
@@ -274,39 +369,48 @@ void main() {
     await controller.attach(23);
     await tester.pumpWidget(MaterialApp(home: Scaffold(body: RdpConnectionPane(controller: controller))));
     await tester.pumpAndSettle();
-    calls.clear();
     controller.value = {'state': 'connected'};
     await tester.pump();
-    expect(find.text('Đã kết nối'), findsOneWidget);
-    expect(find.text('Ngắt kết nối'), findsOneWidget);
-    expect(find.text('Trackpad'), findsOneWidget);
-    expect(find.text('Ẩn bàn phím'), findsOneWidget);
-    // Toggle to trackpad mode: sends 'mode' to native and relabels the button.
-    await tester.tap(find.text('Trackpad'));
-    await tester.pump();
-    expect(controller.trackpadMode.value, isTrue);
-    expect(find.text('Chạm'), findsOneWidget);
-    expect(calls.map((c) => c.method), contains('mode'));
-    expect(calls.lastWhere((c) => c.method == 'mode').arguments, {'trackpad': true});
-    // The header stays for 3s after the tap, then auto-hides.
-    await tester.pump(const Duration(seconds: 3));
+    expect(find.byType(RdpSurface), findsOneWidget);
     expect(find.text('Đã kết nối'), findsNothing);
-    expect(find.text('Ngắt kết nối'), findsNothing);
-    expect(find.byTooltip('Hiện điều khiển'), findsOneWidget);
-    // Reveal button brings the header back.
-    await tester.tap(find.byTooltip('Hiện điều khiển'));
-    await tester.pump();
-    expect(find.text('Đã kết nối'), findsOneWidget);
-    // Hide the keyboard: the toggle relabels and the controller flips.
-    await tester.tap(find.text('Ẩn bàn phím'));
-    await tester.pump();
-    expect(controller.keyboardVisible.value, isFalse);
-    expect(find.text('Hiện bàn phím'), findsOneWidget);
+    expect(find.byTooltip('Chế độ trackpad'), findsNothing);
+    expect(find.byTooltip('Chế độ chạm'), findsNothing);
+    expect(find.byTooltip('Ẩn bàn phím'), findsNothing);
+    expect(find.byTooltip('Hiện bàn phím'), findsNothing);
+    expect(find.byTooltip('Ngắt kết nối'), findsNothing);
+    expect(find.byTooltip('Ẩn điều khiển'), findsNothing);
+    expect(find.byTooltip('Hiện điều khiển'), findsNothing);
+    expect(find.byType(IconButton), findsNothing);
     await tester.pumpWidget(const SizedBox());
     controller.dispose();
   });
 
-  testWidgets('RDP trackpad mode swaps keyboard for a trackpad surface', (tester) async {
+  testWidgets('pane applies the saved connection trackpad and keyboard settings', (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/24');
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      return call.method == 'status' ? {'state': 'idle'} : null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final controller = RdpController();
+    await controller.attach(24);
+    const connection = RdpConnection(
+        id: 'pc-trackpad',
+        name: 'PC trackpad',
+        host: '10.0.0.5',
+        port: 3389,
+        trackpadMode: true,
+        keyboardVisible: false);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(
+        body: RdpConnectionPane(controller: controller, initialConnection: connection))));
+    await tester.pumpAndSettle();
+    expect(controller.trackpadMode.value, isTrue);
+    expect(controller.keyboardVisible.value, isFalse);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
+
+  testWidgets('RDP keyboard stays visible in trackpad mode and swipes move the cursor', (tester) async {
     const channel = MethodChannel('vn.aceremote.app/rdp/0');
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     final calls = <MethodCall>[];
@@ -324,35 +428,42 @@ void main() {
         tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
     await controller.attach(0);
     await tester.pump();
+    // The keyboard stays visible in both modes (no blank trackpad surface).
     expect(find.text('Esc'), findsOneWidget);
     expect(find.byKey(const ValueKey('rdp-trackpad')), findsNothing);
     calls.clear();
     await controller.setTrackpadMode(true);
     await tester.pump();
-    expect(find.text('Esc'), findsNothing);
-    expect(find.byKey(const ValueKey('rdp-trackpad')), findsOneWidget);
+    expect(find.text('Esc'), findsOneWidget);
+    expect(find.byKey(const ValueKey('rdp-trackpad')), findsNothing);
     expect(calls.map((c) => c.method), contains('mode'));
     expect(calls.lastWhere((c) => c.method == 'mode').arguments,
         {'trackpad': true});
-    // Drag on the trackpad sends relative moves.
+    // Drag across the keyboard moves the cursor relatively, no key fires.
     calls.clear();
-    await tester.drag(find.byKey(const ValueKey('rdp-trackpad')),
-        const Offset(60, 0));
+    await messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('state', {'state': 'connected'})),
+        (_) {});
+    await tester.pump();
+    await tester.drag(find.text('A'), const Offset(60, 0));
     await tester.pump();
     expect(calls.map((c) => c.method), contains('moveRelative'));
     final move = calls.firstWhere((c) => c.method == 'moveRelative');
     expect((move.arguments as Map)['dx'], greaterThan(0));
-    // Quick tap clicks left at the cursor.
+    expect(calls.where((c) => c.method == 'key'), isEmpty);
+    // Quick tap on a key still types it.
     calls.clear();
-    await tester.tap(find.byKey(const ValueKey('rdp-trackpad')));
+    await tester.tap(find.text('A'));
     await tester.pump();
-    expect(calls.map((c) => c.method), contains('click'));
-    expect(calls.lastWhere((c) => c.method == 'click').arguments,
-        {'button': 'left'});
-    // Two-finger tap clicks right.
+    expect(calls.map((c) => c.arguments).toList(), [
+      {'vk': 0x41, 'down': true},
+      {'vk': 0x41, 'down': false},
+    ]);
+    // Two-finger tap on the keyboard clicks right, no key fires.
     calls.clear();
-    final center =
-        tester.getCenter(find.byKey(const ValueKey('rdp-trackpad')));
+    final center = tester.getCenter(find.text('A'));
     final first = await tester.startGesture(center);
     final second = await tester.startGesture(center + const Offset(20, 0));
     await first.up();
@@ -361,11 +472,16 @@ void main() {
     expect(calls.map((c) => c.method), contains('click'));
     expect(calls.lastWhere((c) => c.method == 'click').arguments,
         {'button': 'right'});
-    // Back to touch mode restores the keyboard.
+    expect(calls.where((c) => c.method == 'key'), isEmpty);
+    // Back to touch mode: the keyboard still swipes to move the cursor.
     await controller.setTrackpadMode(false);
     await tester.pump();
     expect(find.text('Esc'), findsOneWidget);
-    expect(find.byKey(const ValueKey('rdp-trackpad')), findsNothing);
+    calls.clear();
+    await tester.drag(find.text('A'), const Offset(60, 0));
+    await tester.pump();
+    expect(calls.map((c) => c.method), contains('moveRelative'));
+    expect(calls.where((c) => c.method == 'key'), isEmpty);
     await tester.pumpWidget(const SizedBox());
   });
 
