@@ -6,37 +6,52 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 const defaultBaseUrl = 'http://100.101.127.41:18765';
-String escapeSendKeys(String text) => text
-    .split('')
-    .map((c) =>
-        const {
-          '+': '{+}',
-          '^': '{^}',
-          '%': '{%}',
-          '~': '{~}',
-          '(': '{(}',
-          ')': '{)}',
-          '{': '{{}',
-          '}': '{}}'
-        }[c] ??
-        c)
-    .join();
+// /type accepts raw text: the Windows agent owns SendKeys escaping.
+String sendKeysChord(String chord) {
+  const modifiers = {'Ctrl': '^', 'Alt': '%', 'Shift': '+'};
+  const special = {
+    'Enter': 'ENTER', 'Backspace': 'BS', 'Tab': 'TAB', 'Escape': 'ESC',
+    'Esc': 'ESC', 'Delete': 'DEL', 'Space': ' ',
+    'Left': 'LEFT', 'Right': 'RIGHT', 'Up': 'UP', 'Down': 'DOWN',
+    'PrintScreen': 'PRTSC',
+  };
+  return chord.split('+').map((part) {
+    if (modifiers.containsKey(part)) return modifiers[part]!;
+    if (part.length == 1) return part.toLowerCase();
+    if (part == 'Space') return ' ';
+    return '{${special[part] ?? part}}';
+  }).join();
+}
 
 class DisplayInfo {
   const DisplayInfo(this.id, this.x, this.y, this.width, this.height);
   final int id, x, y, width, height;
+  Rect cropRect(Offset origin, Size virtualSize, Size imageSize) =>
+      Rect.fromLTWH(
+          (x - origin.dx) * imageSize.width / virtualSize.width,
+          (y - origin.dy) * imageSize.height / virtualSize.height,
+          width * imageSize.width / virtualSize.width,
+          height * imageSize.height / virtualSize.height);
   Offset map(Offset point, Size image) => Offset(
       x + (point.dx / image.width * width).clamp(0, width - 1),
       y + (point.dy / image.height * height).clamp(0, height - 1));
 }
 
 class Agent {
-  Agent({required this.baseUrl, this.mock = false});
+  Agent({required this.baseUrl, this.mock = false, http.Client? client})
+      : _client = client ?? http.Client();
   String baseUrl;
   final bool mock;
-  final http.Client _client = http.Client();
+  final http.Client _client;
+  Size virtualSize = const Size(3840, 1080);
+  Offset get virtualOrigin => displays.isEmpty
+      ? Offset.zero
+      : Offset(
+          displays.map((d) => d.x).reduce((a, b) => a < b ? a : b).toDouble(),
+          displays.map((d) => d.y).reduce((a, b) => a < b ? a : b).toDouble());
   final ValueNotifier<List<String>> log = ValueNotifier([]);
   List<DisplayInfo> displays = [];
+  Offset? cursor;
   Set<String> capabilities = {};
   bool get canSelect => capabilities.contains('select_monitor');
   void record(String s) {
@@ -72,8 +87,16 @@ class Agent {
         throw Exception('Hết phiên hoặc chưa được cấp quyền truy cập.');
       }
       if (r.statusCode < 200 || r.statusCode >= 300) {
-        throw Exception(
-            'Agent trả lỗi ${r.statusCode}. Kiểm tra endpoint và địa chỉ.');
+        String detail = r.body;
+        try {
+          final body = jsonDecode(r.body);
+          if (body is Map && body['error'] != null) {
+            detail = body['error'].toString();
+          }
+        } on FormatException {
+          // Older proxies may return plain text.
+        }
+        throw Exception('Agent trả lỗi ${r.statusCode}: $detail');
       }
       return r;
     } on TimeoutException {
@@ -96,13 +119,38 @@ class Agent {
     final r = await request('/health');
     displays = [];
     capabilities = {};
+    cursor = null;
     try {
       final body = jsonDecode(r.body);
       if (body is Map) {
         capabilities = Set<String>.from(body['capabilities'] ?? []);
-        for (final d in body['monitors'] ?? []) {
-          displays.add(DisplayInfo(d['id'] as int, d['x'] as int, d['y'] as int,
-              d['width'] as int, d['height'] as int));
+        if (body['cursorX'] is num && body['cursorY'] is num) {
+          cursor = Offset((body['cursorX'] as num).toDouble(),
+              (body['cursorY'] as num).toDouble());
+        }
+        // width/height describe PrimaryScreen, never the virtual desktop.
+        final screens =
+            List<dynamic>.from(body['screens'] ?? body['monitors'] ?? []);
+        // Primary first gives stable, familiar tab numbering even when Windows
+        // enumerates the negative-origin secondary screen first.
+        screens.sort((a, b) => (b['primary'] == true ? 1 : 0)
+            .compareTo(a['primary'] == true ? 1 : 0));
+        for (final d in screens) {
+          displays.add(DisplayInfo(
+              d['id'] as int? ?? displays.length + 1,
+              d['x'] as int,
+              d['y'] as int,
+              d['width'] as int,
+              d['height'] as int));
+        }
+        if (displays.isNotEmpty) {
+          final right = displays.map((d) => d.x + d.width)
+              .reduce((a, b) => a > b ? a : b);
+          final bottom = displays.map((d) => d.y + d.height)
+              .reduce((a, b) => a > b ? a : b);
+          virtualSize = Size(right - virtualOrigin.dx, bottom - virtualOrigin.dy);
+          // Client-side crop and relative movement via absolute /move.
+          capabilities.addAll({'select_monitor', 'relative_move'});
         }
       }
     } catch (_) {
@@ -115,13 +163,25 @@ class Agent {
       record('POST $endpoint ${jsonEncode(data)}');
       return;
     }
-    await request(endpoint, data: data);
+    for (var attempt = 0;; attempt++) {
+      try {
+        final response = await request(endpoint, data: data);
+        if (response.body.trimLeft().startsWith('{')) {
+          final body = jsonDecode(response.body);
+          if (body is Map && body['ok'] == false) {
+            throw Exception(body['error'] ?? 'Agent từ chối lệnh $endpoint.');
+          }
+        }
+        return;
+      } catch (_) {
+        if (attempt == 1) rethrow;
+      }
+    }
   }
 
   Future<Uint8List> screenshot(int monitor) async {
     if (!mock) {
-      return (await request('/screenshot', query: {'monitor': '$monitor'}))
-          .bodyBytes;
+      return (await request('/screenshot')).bodyBytes;
     }
     final recorder = ui.PictureRecorder();
     final c = Canvas(recorder);

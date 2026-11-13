@@ -4,7 +4,7 @@ Project: `/home/hatch/workspace/ace-remote/app`. Android ID/namespace `vn.acerem
 
 ## Đã triển khai
 
-- Thẻ Windows ace và MacBook vô hiệu hóa. `/health` kiểm tra trạng thái, nút Thử lại, Base URL chỉnh/lưu được. Xử lý timeout 6 giây, HTTP lỗi, 401/403, ảnh lỗi; không để màn hình trắng.
+- Thẻ Windows ace (thẻ MacBook vô hiệu hoá đã bỏ hẳn ở v1.1 — Ace Remote chỉ làm Windows ace). `/health` kiểm tra trạng thái, nút Thử lại, Base URL chỉnh/lưu được. Xử lý timeout 6 giây, HTTP lỗi, 401/403, ảnh lỗi; không để màn hình trắng.
 - Poll ảnh tuần tự, 500/1000 ms nghỉ giữa các lần lấy ảnh, giảm tốc theo thời gian đáp ứng hoặc lỗi (tối đa 8 giây); dừng nền và khi thoát remote. Ảnh cũ giữ lại có báo lỗi. Pinch, pan vùng zoom, vừa màn hình/1:1. 1:1 dùng pixel ảnh, còn Android có device pixel ratio riêng.
 - Chạm tuyệt đối ánh xạ theo ảnh đã fit/zoom và origin/size do agent cung cấp, clamp ở mép, hỗ trợ x âm. Chặn click tuyệt đối nếu thiếu metadata. Không đoán ảnh là màn chính khi agent có thể trả cả desktop.
 - Trackpad: vuốt, chạm trái, chạm 2 ngón phải, 2 ngón cuộn, giữ 500 ms để kéo. Kéo cần capability `mouse_drag`. Nút Click Phải luôn hiện bên phải vùng điều khiển. Di chuột tương đối cần `relative_move`, hoặc mô phỏng qua con trỏ tuyệt đối khi có metadata. Con trỏ mô phỏng không đồng bộ với chuột vật lý PC.

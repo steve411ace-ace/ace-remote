@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'dart:ui' show instantiateImageCodec;
+import 'dart:ui' as ui;
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -428,12 +428,6 @@ class _HomeState extends State<Home> {
                             child: const Text('Thử lại'))
                       ])
                     ]))),
-        const Card(
-            child: ListTile(
-                enabled: false,
-                leading: Icon(Icons.laptop_mac),
-                title: Text('MacBook'),
-                subtitle: Text('Chưa hỗ trợ ở v1'))),
       ]));
 }
 
@@ -564,7 +558,10 @@ class RemotePage extends StatefulWidget {
 
 class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Agent get agent => widget.agent;
-  Uint8List? frame;
+  ui.Image? frame;
+  double fitScale = 1;
+  String? failedPath;
+  Map<String, dynamic>? failedData;
   Size imageSize = const Size(1, 1);
   final transform = TransformationController();
   final text = TextEditingController();
@@ -572,12 +569,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   bool running = true,
       polling = false,
       relative = false,
-      keyboard = false,
+      keyboard = true,
       overlay = true;
   int monitor = 1, failures = 0, delay = 500;
   String? error;
   bool controlsHealthy = true;
-  Offset cursor = const Offset(960, 540);
+  Offset cursor = Offset.zero;
   final Set<String> modifiers = {};
   Future<void> queue = Future.value();
   int pending = 0;
@@ -599,6 +596,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (agent.displays.isNotEmpty) {
+      final first = agent.displays.first;
+      monitor = first.id;
+    }
+    cursor = agent.cursor ?? agent.virtualOrigin;
     poll();
   }
 
@@ -632,27 +634,23 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     final watch = Stopwatch()..start();
     try {
       final bytes = await agent.screenshot(monitor);
-      final codec = await instantiateImageCodec(bytes);
+      final codec = await ui.instantiateImageCodec(bytes);
       final decoded = await codec.getNextFrame();
       final size =
           Size(decoded.image.width.toDouble(), decoded.image.height.toDouble());
-      decoded.image.dispose();
       codec.dispose();
       if (mounted) {
         setState(() {
-          frame = bytes;
+          frame?.dispose();
+          frame = decoded.image;
           imageSize = size;
           failures = 0;
-          error = null;
         });
+      } else {
+        decoded.image.dispose();
       }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          failures++;
-          error = clean(e);
-        });
-      }
+    } catch (_) {
+      failures++;
     } finally {
       polling = false;
       delay = max(
@@ -676,17 +674,24 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     }
     pending++;
     final epoch = commandEpoch;
-    final targetMonitor = monitor;
+    final targetMonitor = data['monitor'] ?? monitor;
     queue = queue.then((_) async {
       if (!mounted || !running || !controlsHealthy || epoch != commandEpoch) {
         return;
       }
       try {
-        await agent.command(path, {...data, 'monitor': targetMonitor});
+        await agent.command(path, {
+          ...data,
+          if (path == '/key' && data['key'] is String)
+            'keys': sendKeysChord(data['key'] as String),
+          'monitor': targetMonitor,
+        });
       } catch (e) {
         if (mounted) {
           setState(() {
-            error = clean(e);
+            error = 'Lệnh điều khiển bị gián đoạn. ${clean(e)}';
+            failedPath = path;
+            failedData = {...data, 'monitor': targetMonitor};
             controlsHealthy = false;
           });
         }
@@ -705,36 +710,30 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     if (value.isEmpty) {
       return;
     }
-    await send('/type', {'text': escapeSendKeys(value)});
+    await send('/type', {'text': value});
   }
 
   void click(String button, [Offset? at]) {
     if (at != null) {
       cursor = at;
     }
-    send('/click', {
-      'button': button,
-      if (at != null) 'x': at.dx.round(),
-      if (at != null) 'y': at.dy.round()
-    });
+    send('/click',
+        {'button': button, 'x': cursor.dx.round(), 'y': cursor.dy.round()});
   }
 
   void move(Offset delta) {
-    if (agent.capabilities.contains('relative_move')) {
-      send('/move',
-          {'relative': true, 'dx': delta.dx.round(), 'dy': delta.dy.round()});
-    } else if (display != null) {
-      final d = display!;
-      cursor = Offset(
-          (cursor.dx + delta.dx)
-              .clamp(d.x.toDouble(), (d.x + d.width - 1).toDouble()),
-          (cursor.dy + delta.dy)
-              .clamp(d.y.toDouble(), (d.y + d.height - 1).toDouble()));
-      send('/move', {'x': cursor.dx.round(), 'y': cursor.dy.round()});
-    } else {
-      notice(
-          'Agent cần metadata màn hình hoặc hỗ trợ relative_move để di chuột.');
-    }
+    // The real agent accepts absolute x/y, never relative dx/dy.
+    final d = display;
+    final origin = d == null
+        ? agent.virtualOrigin
+        : Offset(d.x.toDouble(), d.y.toDouble());
+    final size = d == null
+        ? agent.virtualSize
+        : Size(d.width.toDouble(), d.height.toDouble());
+    cursor = Offset(
+        (cursor.dx + delta.dx).clamp(origin.dx, origin.dx + size.width - 1),
+        (cursor.dy + delta.dy).clamp(origin.dy, origin.dy + size.height - 1));
+    send('/move', {'x': cursor.dx.round(), 'y': cursor.dy.round()});
   }
 
   void notice(String message) {
@@ -803,6 +802,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     releaseDrag();
     timer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
+    frame?.dispose();
     transform.dispose();
     text.dispose();
     super.dispose();
@@ -810,65 +810,57 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   Widget screenshot() => LayoutBuilder(builder: (context, box) {
         if (frame == null) {
-          return Center(child: Text(error ?? 'Đang lấy ảnh…'));
+          return const Center(child: Text('Đang lấy ảnh…'));
         }
-        final scale = min(
-            box.maxWidth / imageSize.width, box.maxHeight / imageSize.height);
-        final fitted = Size(imageSize.width * scale, imageSize.height * scale);
-        return Stack(children: [
-          Center(
-              child: InteractiveViewer(
+        final d = display;
+        final source =
+            d?.cropRect(agent.virtualOrigin, agent.virtualSize, imageSize) ??
+                (Offset.zero & imageSize);
+        final scale = box.maxWidth / source.width;
+        fitScale = scale;
+        final fitted = Size(box.maxWidth, source.height * scale);
+        return ClipRect(
+            child: OverflowBox(
+          minHeight: 0,
+          maxHeight: double.infinity,
+          alignment: Alignment.center,
+          child: SizedBox(
+              width: fitted.width,
+              height: fitted.height,
+              child: Stack(children: [
+                InteractiveViewer(
                   transformationController: transform,
                   minScale: 0.5,
                   maxScale: max(8, 1 / scale),
-                  child: SizedBox(
-                      width: fitted.width,
-                      height: fitted.height,
-                      child: GestureDetector(
-                        onTapUp: relative || error != null
-                            ? null
-                            : (details) {
-                                if (display == null) {
-                                  notice(
-                                      'Agent chưa trả kích thước và gốc màn hình; chưa gửi click tuyệt đối.');
-                                  return;
-                                }
-                                click(
-                                    'left',
-                                    display!
-                                        .map(details.localPosition, fitted));
-                              },
-                        child: Image.memory(frame!,
-                            gaplessPlayback: true,
-                            fit: BoxFit.fill,
-                            errorBuilder: (_, __, ___) =>
-                                const Center(child: Text('Ảnh không hợp lệ'))),
-                      )))),
-          if (relative && overlay)
-            Positioned.fill(child: trackpad(translucent: true)),
-          Positioned(
-              left: 8,
-              bottom: 4,
-              child: Wrap(spacing: 6, children: [
-                FilledButton.tonal(
-                    onPressed: () => transform.value = Matrix4.identity(),
-                    child: const Text('Vừa màn hình')),
-                FilledButton.tonal(
-                    onPressed: () => transform.value =
-                        Matrix4.diagonal3Values(1 / scale, 1 / scale, 1),
-                    child: const Text('1:1')),
+                  child: GestureDetector(
+                      onTapUp: relative
+                          ? null
+                          : (details) {
+                              if (d != null) {
+                                click('left',
+                                    d.map(details.localPosition, fitted));
+                              }
+                            },
+                      child: CustomPaint(
+                          size: fitted,
+                          painter: RemoteFramePainter(frame!, source))),
+                ),
+                if (relative && overlay)
+                  Positioned.fill(child: trackpad(translucent: true)),
               ])),
-        ]);
+        ));
       });
-  Widget trackpad({bool translucent = false}) => Trackpad(
-        translucent: translucent,
+
+  Widget trackpad({bool translucent = false, Widget? child}) => KeyboardSurface(
+        child: child,
+        keyAt: child == null ? null : keyAt,
         onMove: move,
         onClick: click,
         onScroll: (dy) => send('/scroll', {'delta': (-dy * 3).round()}),
         onDrag: (down) {
           if (!agent.capabilities.contains('mouse_drag')) {
             if (down) {
-              notice('Agent chưa hỗ trợ mouse_drag (down/up).');
+              notice('Agent không có mouse_drag (down/up).');
             }
             return;
           }
@@ -903,90 +895,150 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                   },
                   child: Text(entry.key))),
       ]));
-  Widget keyboardPanel() =>
-      ListView(padding: const EdgeInsets.all(6), children: [
-        Row(children: [
-          Expanded(
-              child: TextField(
-                  controller: text,
-                  maxLines: 1,
-                  decoration: const InputDecoration(
-                      hintText: 'Nhập tiếng Việt có dấu', isDense: true),
-                  onSubmitted: (v) async {
-                    await typeText(v);
-                    if (controlsHealthy) {
-                      text.clear();
-                    }
-                  })),
-          IconButton(
-              tooltip: 'Gõ',
-              icon: const Icon(Icons.send),
-              onPressed: () async {
-                await typeText(text.text);
-                if (controlsHealthy) {
-                  text.clear();
-                }
-              }),
-          TextButton(
-              onPressed: () async {
-                try {
-                  final data = await Clipboard.getData(Clipboard.kTextPlain);
-                  await typeText(data?.text ?? '');
-                } catch (_) {
-                  notice('Không đọc được clipboard điện thoại.');
-                }
-              },
-              child: const Text('Dán'))
-        ]),
-        for (final row in ['1234567890', 'qwertyuiop', 'asdfghjkl', 'zxcvbnm'])
-          Row(
-              children: row
-                  .split('')
-                  .map((c) => Expanded(
-                      child: Padding(
-                          padding: const EdgeInsets.all(1),
-                          child: InkWell(
-                              onTap: () {
-                                if (modifiers.isEmpty) {
-                                  typeText(c);
-                                } else {
-                                  key(c.toUpperCase());
-                                }
-                              },
-                              child: Container(
-                                  alignment: Alignment.center,
-                                  height: 34,
-                                  decoration: BoxDecoration(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerHighest,
-                                      borderRadius: BorderRadius.circular(4)),
-                                  child: Text(c))))))
-                  .toList()),
-        Wrap(spacing: 3, children: [
-          for (final k in ['Ctrl', 'Alt', 'Win', 'Shift'])
-            FilterChip(
-                label: Text(k),
-                selected: modifiers.contains(k),
-                onSelected: (v) => setState(() {
-                      v ? modifiers.add(k) : modifiers.remove(k);
-                    })),
-          for (final entry in const {
-            'esc': 'Esc',
-            'tab': 'Tab',
-            'Del': 'Delete',
-            'Backspace': 'Backspace',
-            'Enter': 'Enter',
-            '←': 'Left',
-            '↑': 'Up',
-            '↓': 'Down',
-            '→': 'Right',
-            'Dấu cách': 'Space'
-          }.entries)
-            ActionChip(
-                label: Text(entry.key), onPressed: () => key(entry.value)),
-        ]),
-      ]);
+  final keyTargets = <GlobalKey, VoidCallback>{};
+
+  VoidCallback? keyAt(Offset position) {
+    for (final entry in keyTargets.entries) {
+      final box = entry.key.currentContext?.findRenderObject();
+      if (box is RenderBox && box.hasSize &&
+          (box.localToGlobal(Offset.zero) & box.size).contains(position)) {
+        return entry.value;
+      }
+    }
+    return null;
+  }
+
+  Widget laptopKey(String label,
+      {double units = 1, String? command, bool modifier = false}) {
+    final selected = modifier && modifiers.contains(command ?? label);
+    void press() {
+      if (label == 'Click Phải') {
+        click('right');
+      } else if (modifier) {
+        setState(() {
+          selected ? modifiers.remove(command ?? label) : modifiers.add(command ?? label);
+        });
+      } else if (command != null) {
+        key(command);
+      } else if (modifiers.isEmpty) {
+        typeText(label);
+      } else {
+        key(label.toUpperCase());
+      }
+    }
+    final target = GlobalKey();
+    keyTargets[target] = press;
+    return Expanded(
+      flex: (units * 100).round(),
+      child: Padding(
+        padding: const EdgeInsets.all(2),
+        child: Semantics(
+          button: true, selected: selected, label: label, onTap: press,
+          child: Container(
+            key: target,
+            decoration: BoxDecoration(
+              color: selected ? const Color(0xff505762) : const Color(0xff292b30),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: const Color(0xff3c3e43))),
+            child: Center(child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: FittedBox(fit: BoxFit.scaleDown,
+                child: label == 'Win'
+                  ? IgnorePointer(child: FilterChip(
+                      label: const Text('Win'), selected: selected,
+                      onSelected: (_) => press()))
+                  : Text(label, style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w500,
+                      color: Colors.white)))))))));
+  }
+
+  Widget keyboardPanel() => LayoutBuilder(builder: (context, box) {
+        // Scroll only on short windows; keep every key available without overflow.
+        keyTargets.clear();
+        final height = max(216.0, box.maxHeight);
+        return SingleChildScrollView(
+            child: SizedBox(
+                height: height,
+                child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Column(children: [
+                      SizedBox(
+                          height: 44,
+                          child: Row(children: [
+                            Expanded(
+                                child: TextField(
+                                    controller: text,
+                                    maxLines: 1,
+                                    decoration: const InputDecoration(
+                                        hintText: 'Nhập tiếng Việt có dấu',
+                                        isDense: true),
+                                    onSubmitted: (v) async {
+                                      await typeText(v);
+                                      if (controlsHealthy) text.clear();
+                                    })),
+                            IconButton(
+                                tooltip: 'Gõ',
+                                icon: const Icon(Icons.send),
+                                onPressed: () async {
+                                  await typeText(text.text);
+                                  if (controlsHealthy) text.clear();
+                                }),
+                            TextButton(
+                                onPressed: () async {
+                                  try {
+                                    final data = await Clipboard.getData(
+                                        Clipboard.kTextPlain);
+                                    await typeText(data?.text ?? '');
+                                  } catch (_) {
+                                    notice(
+                                        'Không đọc được clipboard điện thoại.');
+                                  }
+                                },
+                                child: const Text('Dán'))
+                          ])),
+                      Expanded(child: trackpad(child: Column(children: [
+                        Expanded(child: Row(children: [
+                          laptopKey('esc', command: 'Esc'),
+                          laptopKey('tab', units: 1.5, command: 'Tab'),
+                          laptopKey('Ctrl', command: 'Ctrl', modifier: true),
+                          laptopKey('Alt', command: 'Alt', modifier: true),
+                          laptopKey('Win', modifier: true),
+                          laptopKey('⇧', command: 'Shift', modifier: true),
+                          for (final e in const {'←':'Left','↑':'Up','↓':'Down','→':'Right'}.entries)
+                            laptopKey(e.key, command: e.value),
+                          laptopKey('Click Phải', units: 2.5),
+                        ])),
+                        Expanded(child: Row(children: [
+                          for (final c in 'qwertyuiop'.split('')) laptopKey(c),
+                          laptopKey('⌫', units: 2, command: 'Backspace'),
+                        ])),
+                        Expanded(child: Row(children: [
+                          const Spacer(flex: 50),
+                          for (final c in 'asdfghjkl'.split('')) laptopKey(c),
+                          laptopKey('⏎', units: 2.25, command: 'Enter'),
+                          const Spacer(flex: 25),
+                        ])),
+                        Expanded(child: Row(children: [
+                          const Spacer(flex: 75),
+                          for (final c in 'zxcvbnm,.'.split('')) laptopKey(c),
+                          laptopKey('⇧', units: 2.25, command: 'Shift', modifier: true),
+                        ])),
+                        Expanded(child: Row(children: [
+                          laptopKey('Ctrl', units: 1.25, command: 'Ctrl', modifier: true),
+                          laptopKey('Alt', units: 1.25, command: 'Alt', modifier: true),
+                          laptopKey('Space', units: 5.5, command: 'Space'),
+                          for (final e in const {'←':'Left','↑':'Up','↓':'Down','→':'Right'}.entries)
+                            laptopKey(e.key, command: e.value),
+                        ])),
+                      ]))),
+                    ]))));
+      });
+
+  Widget laptopDeck(Widget child) {
+    return Theme(data: ThemeData.dark(useMaterial3: true),
+        child: ColoredBox(color: const Color(0xff16171a), child: child));
+  }
+
   void showLog() => showModalBottomSheet<void>(
       context: context,
       builder: (_) => ValueListenableBuilder<List<String>>(
@@ -1032,57 +1084,41 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                       child: Text(error ?? 'Lệnh điều khiển bị gián đoạn.')),
                   TextButton(
                       onPressed: () async {
-                        try {
-                          await agent.health();
-                          if (!mounted) {
-                            return;
-                          }
-                          setState(() {
-                            error = null;
-                            controlsHealthy = true;
-                          });
-                          timer?.cancel();
-                          poll();
-                        } catch (e) {
-                          if (mounted) {
-                            setState(() => error = clean(e));
-                          }
-                        }
+                        final path = failedPath;
+                        final data = failedData;
+                        if (path == null || data == null) return;
+                        setState(() {
+                          error = null;
+                          controlsHealthy = true;
+                        });
+                        await send(path, data);
                       },
                       child: const Text('Thử lại'))
                 ])),
           SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(children: [
-                for (final id in [1, 2])
+                for (final d in agent.displays)
                   TextButton(
-                      onPressed: () {
-                        if (id == monitor) {
-                          return;
-                        }
-                        if (!agent.canSelect ||
-                            !agent.displays.any((d) => d.id == id)) {
-                          notice(
-                              'Chưa chuyển: agent cần select_monitor và metadata màn hình.');
-                          return;
-                        }
-                        if (polling || pending > 0) {
-                          notice(
-                              'Đợi yêu cầu hiện tại xong rồi chuyển màn hình.');
-                          return;
-                        }
-                        setState(() {
-                          monitor = id;
-                          frame = null;
-                          transform.value = Matrix4.identity();
-                          final d = display!;
-                          cursor =
-                              Offset(d.x + d.width / 2, d.y + d.height / 2);
-                        });
-                        timer?.cancel();
-                        poll();
-                      },
-                      child: Text('Màn hình $id${id == monitor ? ' ✓' : ''}')),
+                      style: TextButton.styleFrom(
+                          backgroundColor: d.id == monitor
+                              ? Theme.of(context).colorScheme.secondaryContainer
+                              : null),
+                      onPressed: () => setState(() {
+                            monitor = d.id;
+                            transform.value = Matrix4.identity();
+                            cursor =
+                                Offset(d.x + d.width / 2, d.y + d.height / 2);
+                          }),
+                      child: Text(
+                          'Màn hình ${d.id}${d.id == monitor ? ' ✓' : ''}')),
+                TextButton(
+                    onPressed: () => transform.value = Matrix4.identity(),
+                    child: const Text('Vừa màn hình')),
+                TextButton(
+                    onPressed: () => transform.value =
+                        Matrix4.diagonal3Values(1 / fitScale, 1 / fitScale, 1),
+                    child: const Text('1:1')),
                 Switch(
                     value: relative,
                     onChanged: (v) => setState(() => relative = v)),
@@ -1100,65 +1136,47 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                           overlay ? Icons.touch_app : Icons.pan_tool_outlined)),
                 Text('Ảnh: ${(1000 / delay).toStringAsFixed(1)}/giây'),
               ])),
-          Expanded(
-              child: landscape
-                  ? Column(children: [
-                      Expanded(child: screenshot()),
-                      Expanded(
-                          child: Row(children: [
-                        Expanded(child: trackpad()),
-                        Expanded(
-                            child: Column(children: [
-                          Expanded(child: keyboardPanel()),
-                          rightClick()
-                        ]))
-                      ]))
-                    ])
-                  : Column(children: [
-                      Expanded(child: screenshot()),
-                      if (keyboard)
-                        SizedBox(
-                            height: min(
-                                300, MediaQuery.sizeOf(context).height * .35),
-                            child: keyboardPanel()),
-                      Align(
-                          alignment: Alignment.centerRight, child: rightClick())
-                    ])),
+          Expanded(child: Column(children: [
+            if (landscape)
+              Expanded(child: screenshot())
+            else
+              AspectRatio(
+                aspectRatio: display == null ? 16 / 9 : display!.width / display!.height,
+                child: screenshot()),
+            if (keyboard) Expanded(child: laptopDeck(keyboardPanel())),
+          ])),
           shortcuts(),
         ])));
   }
 
-  Widget rightClick() => Padding(
-      padding: const EdgeInsets.all(6),
-      child: FilledButton.icon(
-          style: FilledButton.styleFrom(minimumSize: const Size(160, 48)),
-          onPressed: () => click('right'),
-          icon: const Icon(Icons.mouse),
-          label: const Text('Click Phải')));
+
 }
 
-class Trackpad extends StatefulWidget {
-  const Trackpad(
+class KeyboardSurface extends StatefulWidget {
+  const KeyboardSurface(
       {super.key,
       required this.onMove,
       required this.onClick,
       required this.onScroll,
       required this.onDrag,
-      this.translucent = false});
+      this.child, this.keyAt});
   final void Function(Offset) onMove;
   final void Function(String) onClick;
   final void Function(double) onScroll;
   final void Function(bool) onDrag;
-  final bool translucent;
+  final Widget? child;
+  final VoidCallback? Function(Offset)? keyAt;
   @override
-  State<Trackpad> createState() => _TrackpadState();
+  State<KeyboardSurface> createState() => _KeyboardSurfaceState();
 }
 
-class _TrackpadState extends State<Trackpad> {
+class _KeyboardSurfaceState extends State<KeyboardSurface> {
   final Map<int, Offset> points = {};
   Timer? hold;
   bool moved = false, two = false, dragging = false;
   double distance = 0;
+  Offset pending = Offset.zero;
+  VoidCallback? pressedKey;
   void finish() {
     hold?.cancel();
     if (dragging) {
@@ -1185,6 +1203,8 @@ class _TrackpadState extends State<Trackpad> {
             moved = false;
             two = false;
             distance = 0;
+            pending = Offset.zero;
+            pressedKey = widget.keyAt?.call(e.position);
           }
           points[e.pointer] = e.localPosition;
           if (points.length > 1) {
@@ -1211,7 +1231,9 @@ class _TrackpadState extends State<Trackpad> {
           final delta = e.localPosition - old;
           points[e.pointer] = e.localPosition;
           distance += delta.distance;
-          if (distance > 5) {
+          pending += delta;
+          final wasMoved = moved;
+          if (distance > 10) {
             moved = true;
             hold?.cancel();
           }
@@ -1219,9 +1241,9 @@ class _TrackpadState extends State<Trackpad> {
             return;
           }
           if (points.length == 2) {
-            widget.onScroll(delta.dy / 2);
+            widget.onScroll((wasMoved ? delta.dy : pending.dy) / 2);
           } else if (!two) {
-            widget.onMove(delta);
+            widget.onMove(wasMoved ? delta : pending);
           }
         },
         onPointerUp: (e) {
@@ -1232,24 +1254,29 @@ class _TrackpadState extends State<Trackpad> {
               widget.onDrag(false);
               dragging = false;
             } else if (!moved) {
-              widget.onClick(two ? 'right' : 'left');
+              if (two) {
+                widget.onClick('right');
+              } else if (widget.keyAt != null) {
+                pressedKey?.call();
+              } else {
+                widget.onClick('left');
+              }
             }
           }
         },
         onPointerCancel: (_) => finish(),
-        child: Container(
-            alignment: Alignment.center,
-            margin:
-                widget.translucent ? EdgeInsets.zero : const EdgeInsets.all(6),
-            decoration: BoxDecoration(
-                color: widget.translucent
-                    ? Colors.transparent
-                    : Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(12)),
-            child: widget.translucent
-                ? null
-                : const Text(
-                    'Trackpad\nVuốt: di chuột • 2 ngón: cuộn\nChạm 2 ngón: click phải\nGiữ rồi vuốt: kéo thả',
-                    textAlign: TextAlign.center)),
+        child: widget.child ?? const SizedBox.expand(),
       );
+}
+
+class RemoteFramePainter extends CustomPainter {
+  RemoteFramePainter(this.image, this.source);
+  final ui.Image image;
+  final Rect source;
+  @override
+  void paint(Canvas canvas, Size size) =>
+      canvas.drawImageRect(image, source, Offset.zero & size, Paint());
+  @override
+  bool shouldRepaint(RemoteFramePainter oldDelegate) =>
+      oldDelegate.image != image || oldDelegate.source != source;
 }
