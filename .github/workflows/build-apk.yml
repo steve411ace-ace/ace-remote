@@ -30,6 +30,8 @@ jobs:
         run: |
           flutter create --template=app --org vn.aceremote --project-name ace_remote /tmp/tpl
           cp /tmp/tpl/android/gradle/wrapper/gradle-wrapper.jar android/gradle/wrapper/gradle-wrapper.jar
+          cp /tmp/tpl/android/gradlew android/gradlew
+          cp /tmp/tpl/android/gradlew.bat android/gradlew.bat
           cp -r /tmp/tpl/android/app/src/main/res/mipmap-* android/app/src/main/res/
           chmod +x android/gradlew
       - run: flutter build apk --release
