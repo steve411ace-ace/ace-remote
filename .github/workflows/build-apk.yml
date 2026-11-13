@@ -1,0 +1,44 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.5"
+          channel: stable
+      - run: flutter pub get
+      - name: Restore Gradle wrapper and launcher icons
+        run: |
+          flutter create --template=app --org vn.aceremote --project-name ace_remote /tmp/tpl
+          cp /tmp/tpl/android/gradle/wrapper/gradle-wrapper.jar android/gradle/wrapper/gradle-wrapper.jar
+          cp -r /tmp/tpl/android/app/src/main/res/mipmap-* android/app/src/main/res/
+          chmod +x android/gradlew
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: "Ace Remote v1.0.0"
+          files: build/app/outputs/flutter-apk/app-release.apk
