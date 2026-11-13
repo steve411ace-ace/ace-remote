@@ -277,7 +277,7 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                 twoFingerTap = false
             }
         }
-        true
+        return true
     }
     private fun onTouch(event: MotionEvent): Boolean = synchronized(lock) {
         val a = inputAttempt()
