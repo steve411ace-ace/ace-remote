@@ -23,6 +23,11 @@ void main() {
       'Down': 0x128,
       'Delete': 0x12e,
       'Win': 0x15b,
+      // Step 24, item 6: navigation column.
+      'PgUp': 0x21,
+      'PgDn': 0x22,
+      'End': 0x23,
+      'Home': 0x24,
       '-': 0xbd,
       '=': 0xbb,
       '[': 0xdb,
@@ -74,5 +79,44 @@ void main() {
         map(const Offset(100, 0), const Size(400, 400), const Size(100, 200)),
         Offset.zero);
     expect(map(Offset.zero, Size.zero, const Size(100, 200)), isNull);
+  });
+
+  test('shifted labels follow the US-layout Shift characters', () {
+    const samples = {
+      '`': '~',
+      '1': '!',
+      '2': '@',
+      '3': '#',
+      '4': r'$',
+      '5': '%',
+      '6': '^',
+      '7': '&',
+      '8': '*',
+      '9': '(',
+      '0': ')',
+      '-': '_',
+      '=': '+',
+      '[': '{',
+      ']': '}',
+      '\\': '|',
+      ';': ':',
+      "'": '"',
+      ',': '<',
+      '.': '>',
+      '/': '?',
+    };
+    for (final entry in samples.entries) {
+      expect(shiftedLabel(entry.key), entry.value);
+    }
+    // Letters already display uppercase and named keys have no shifted
+    // character, so their labels stay unchanged.
+    expect(shiftedLabel('Q'), 'Q');
+    expect(shiftedLabel('a'), 'a');
+    expect(shiftedLabel('Esc'), 'Esc');
+    expect(shiftedLabel('Space'), 'Space');
+    expect(shiftedLabel('Shift'), 'Shift');
+    // Step 24, item 2: the 'Left' mouse key is not a character key, so
+    // Shift never changes its label.
+    expect(shiftedLabel('Left'), 'Left');
   });
 }

@@ -618,11 +618,11 @@ void main() {
         MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
     final rows = [
       ['Esc', for (var i = 1; i <= 12; i++) 'F$i', 'Del'],
-      [...'`1234567890-='.split(''), 'Backspace'],
-      ['Tab', ...'QWERTYUIOP[]'.split(''), r'\'],
-      ['Caps', ..."ASDFGHJKL;'".split(''), 'Enter'],
-      ['Shift', ...'ZXCVBNM,./'.split(''), 'Shift'],
-      ['Ctrl', 'Win', 'Alt', 'Space', 'Alt', 'Ctrl', '←', '↑', '↓', '→'],
+      [...'`1234567890-='.split(''), 'Backspace', 'PgUp'],
+      ['Tab', ...'QWERTYUIOP[]'.split(''), r'\', 'PgDn'],
+      ['Caps', ..."ASDFGHJKL;'".split(''), 'Enter', 'Home'],
+      ['Shift', ...'ZXCVBNM,./'.split(''), 'Shift', '↑', 'End'],
+      ['Ctrl', 'Win', 'Alt', 'Left', 'Space', 'Left', 'Alt', 'Ctrl', '←', '↓', '→'],
       ['Click trái', 'Click phải'],
     ];
     for (var i = 0; i < rows.length; i++) {
@@ -649,6 +649,19 @@ void main() {
         'monitor': 1,
       });
     }
+    // Step 24, item 2: both 'Left' keys (either side of Space) click
+    // left at the cursor, same as 'Click trái'.
+    for (final finder in [find.text('Left').first, find.text('Left').last]) {
+      await tester.tap(finder);
+      await tester.pump();
+      expect(requests.last.url.path, '/click');
+      expect(jsonDecode(requests.last.body), {
+        'button': 'left',
+        'x': 123,
+        'y': 234,
+        'monitor': 1,
+      });
+    }
     for (final label in ['F1', 'F12', 'Backspace', 'Enter', 'Del']) {
       await tester.tap(find.text(label));
       await tester.pump();
@@ -661,6 +674,20 @@ void main() {
             'Backspace': '{BACKSPACE}',
             'Enter': '{ENTER}',
             'Del': '{DEL}',
+          }[label]);
+    }
+    // Step 24, item 6: the navigation column sends the SendKeys names.
+    for (final label in ['PgUp', 'PgDn', 'Home', 'End']) {
+      await tester.tap(find.text(label));
+      await tester.pump();
+      expect(requests.last.url.path, '/key');
+      expect(
+          jsonDecode(requests.last.body)['keys'],
+          {
+            'PgUp': '{PGUP}',
+            'PgDn': '{PGDN}',
+            'Home': '{HOME}',
+            'End': '{END}',
           }[label]);
     }
     for (final label in ['Caps', 'Shift']) {

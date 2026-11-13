@@ -23,6 +23,11 @@ String sendKeysChord(String chord) {
     'Up': 'UP',
     'Down': 'DOWN',
     'PrintScreen': 'PRTSC',
+    // Step 24, item 6: navigation column (SendKeys names are uppercase).
+    'PgUp': 'PGUP',
+    'PgDn': 'PGDN',
+    'Home': 'HOME',
+    'End': 'END',
   };
   return chord.split('+').map((part) {
     if (modifiers.containsKey(part)) return modifiers[part]!;

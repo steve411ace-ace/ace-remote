@@ -3,6 +3,37 @@ import 'dart:ui';
 
 const int vkExtKey = 0x100;
 
+/// US-layout shifted character for a key label, shown while Shift is armed
+/// (step 24). Letter keys already display uppercase, so they map to
+/// themselves; named keys (Esc, Tab, ...) are not in the map either.
+const Map<String, String> shiftKeyLabels = {
+  '`': '~',
+  '1': '!',
+  '2': '@',
+  '3': '#',
+  '4': r'$',
+  '5': '%',
+  '6': '^',
+  '7': '&',
+  '8': '*',
+  '9': '(',
+  '0': ')',
+  '-': '_',
+  '=': '+',
+  '[': '{',
+  ']': '}',
+  '\\': '|',
+  ';': ':',
+  "'": '"',
+  ',': '<',
+  '.': '>',
+  '/': '?',
+};
+
+/// The label a key shows while Shift is armed; unchanged for keys with no
+/// shifted character (letters, named keys).
+String shiftedLabel(String label) => shiftKeyLabels[label] ?? label;
+
 /// Windows VK values from FreeRDP KeyboardMapper.java, not Android keycodes.
 int? rdpVirtualKey(String key) {
   if (key.length == 1) {
@@ -30,6 +61,11 @@ int? rdpVirtualKey(String key) {
     'Up': 0x126,
     'Right': 0x127,
     'Down': 0x128,
+    // Step 24, item 6: navigation column (PgUp/PgDn/Home/End).
+    'PgUp': 0x21,
+    'PgDn': 0x22,
+    'End': 0x23,
+    'Home': 0x24,
     '-': 0xbd,
     '=': 0xbb,
     '[': 0xdb,

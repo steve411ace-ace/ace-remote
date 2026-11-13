@@ -124,13 +124,9 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
                     agent: agent,
                     pollMs: () => pollMs,
                     settings: () => SettingsPage(
-                        agent: agent,
                         theme: theme,
-                        pollMs: pollMs,
-                        onSave: (url, mode, ms) async {
-                          agent.baseUrl = url;
+                        onThemeChanged: (mode) async {
                           theme = mode;
-                          pollMs = ms;
                           await save();
                         })),
       );
@@ -542,109 +538,64 @@ String clean(Object e) {
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage(
-      {super.key,
-      required this.agent,
-      required this.theme,
-      required this.pollMs,
-      required this.onSave});
-  final Agent agent;
+      {super.key, required this.theme, required this.onThemeChanged});
   final ThemeMode theme;
-  final int pollMs;
-  final Future<void> Function(String, ThemeMode, int) onSave;
+  final Future<void> Function(ThemeMode mode) onThemeChanged;
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  late final url = TextEditingController(text: widget.agent.baseUrl);
   late ThemeMode mode = widget.theme;
-  late int ms = widget.pollMs;
-  String message = '';
-  bool busy = false;
-  @override
-  void dispose() {
-    url.dispose();
-    super.dispose();
+
+  Future<void> _select(ThemeMode value) async {
+    if (value == mode) return;
+    setState(() => mode = value);
+    await widget.onThemeChanged(value);
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-      appBar: AppBar(title: const Text('Cài đặt')),
-      body: ListView(padding: const EdgeInsets.all(20), children: [
-        TextField(
-            controller: url,
-            decoration:
-                const InputDecoration(labelText: 'Địa chỉ agent (Base URL)'),
-            keyboardType: TextInputType.url),
-        OutlinedButton(
-            onPressed: busy
-                ? null
-                : () async {
-                    setState(() => busy = true);
-                    final probe = Agent(
-                        baseUrl: url.text.trim(), mock: widget.agent.mock);
-                    try {
-                      await probe.health();
-                      if (mounted) {
-                        setState(
-                            () => message = 'Kết nối thành công (/health)');
-                      }
-                    } catch (e) {
-                      if (mounted) {
-                        setState(() => message = clean(e));
-                      }
-                    } finally {
-                      probe.dispose();
-                      if (mounted) {
-                        setState(() => busy = false);
-                      }
-                    }
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+        appBar: AppBar(title: const Text('Cài đặt')),
+        body: ListView(padding: const EdgeInsets.all(16), children: [
+          Text('Giao diện', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Card(
+              clipBehavior: Clip.antiAlias,
+              child: RadioGroup<ThemeMode>(
+                  groupValue: mode,
+                  onChanged: (v) {
+                    if (v != null) unawaited(_select(v));
                   },
-            child: const Text('Kiểm tra kết nối')),
-        Text(message),
-        DropdownButtonFormField<ThemeMode>(
-            initialValue: mode,
-            decoration: const InputDecoration(labelText: 'Giao diện'),
-            items: const [
-              DropdownMenuItem(
-                  value: ThemeMode.system, child: Text('Theo điện thoại')),
-              DropdownMenuItem(value: ThemeMode.light, child: Text('Sáng')),
-              DropdownMenuItem(value: ThemeMode.dark, child: Text('Tối'))
-            ],
-            onChanged: (v) => setState(() => mode = v!)),
-        DropdownButtonFormField<int>(
-            initialValue: ms,
-            decoration: const InputDecoration(labelText: 'Tốc độ ảnh'),
-            items: const [
-              DropdownMenuItem(
-                  value: 500, child: Text('Bình thường • 2 ảnh/giây')),
-              DropdownMenuItem(
-                  value: 1000, child: Text('Tiết kiệm • 1 ảnh/giây'))
-            ],
-            onChanged: (v) => setState(() => ms = v!)),
-        const Padding(
-            padding: EdgeInsets.symmetric(vertical: 20),
-            child: Text(
-                'Máy ngủ hẳn thì không gọi dậy được ở v1.\nAgent PC cần mở binding trên IP Tailscale; hiện tại chỉ nghe 127.0.0.1.\nChỉ kết nối agent của bạn trong tailnet tin cậy.')),
-        FilledButton(
-            onPressed: busy
-                ? null
-                : () async {
-                    final probe = Agent(baseUrl: url.text.trim());
-                    try {
-                      probe.uri('/health');
-                      await widget.onSave(url.text.trim(), mode, ms);
-                      if (context.mounted) {
-                        Navigator.pop(context);
-                      }
-                    } catch (e) {
-                      setState(() => message = clean(e));
-                    } finally {
-                      probe.dispose();
-                    }
-                  },
-            child: const Text('Lưu cài đặt')),
-      ]));
+                  child: const Column(children: [
+                    RadioListTile<ThemeMode>(
+                        title: Text('Sáng'),
+                        subtitle: Text('Giao diện sáng'),
+                        secondary: Icon(Icons.light_mode_outlined),
+                        value: ThemeMode.light),
+                    RadioListTile<ThemeMode>(
+                        title: Text('Tối'),
+                        subtitle: Text('Giao diện tối'),
+                        secondary: Icon(Icons.dark_mode_outlined),
+                        value: ThemeMode.dark),
+                    RadioListTile<ThemeMode>(
+                        title: Text('Theo điện thoại'),
+                        subtitle:
+                            Text('Theo cài đặt hệ thống của điện thoại'),
+                        secondary: Icon(Icons.smartphone_outlined),
+                        value: ThemeMode.system),
+                  ]))),
+          const SizedBox(height: 16),
+          Text(
+              'Cài đặt kết nối (địa chỉ, cổng, tài khoản) nằm trong màn hình sửa từng kết nối trên trang chính.',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: scheme.onSurfaceVariant)),
+        ]));
+  }
 }
 
 class RemotePage extends StatefulWidget {
@@ -670,6 +621,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Agent get agent => widget.agent;
   ui.Image? frame;
   double fitScale = 1;
+  // Label of the key currently pressed (step 24 has two 'Left' keys with
+  // the same display label, so they carry distinct keyIds and only the one
+  // under the finger highlights).
   String? pressedLabel;
   String? failedPath;
   Map<String, dynamic>? failedData;
@@ -1096,7 +1050,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   }
 
   Widget laptopKey(String label,
-      {double units = 1, String? command, bool modifier = false}) {
+      {double units = 1,
+      String? command,
+      bool modifier = false,
+      String? mouseButton,
+      String? keyId}) {
     final isCaps = label == 'Caps';
     // In RDP mode the Caps key shows the app-tracked Caps Lock state; in
     // agent mode Caps still arms Shift one-shot, so it highlights while
@@ -1109,9 +1067,25 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       if (widget.rdpMode) {
         // A swipe / two-finger gesture on the keyboard must not type a key.
         if (kbSuppressKey) { kbSuppressKey = false; return; }
+        // Mouse buttons (step 24, item 2): 'Left' clicks at the cursor, it
+        // is not a key — it must never reach rdpKey, where 'Left' means the
+        // VK_LEFT arrow key (0x125). Armed modifiers stay armed so
+        // Shift+click selection keeps working.
+        if (mouseButton != null) {
+          if (!rdpController.isConnected) return;
+          unawaited(rdpController.clickAtLastPosition(mouseButton));
+          return;
+        }
         // Caps must reach rdpKey as 'Caps' (a real Caps Lock toggle), even
         // though this widget carries command 'Shift' for agent mode.
         rdpKey(isCaps ? 'Caps' : (command ?? label));
+        return;
+      }
+      // Mouse buttons in agent mode: click at the last cursor position,
+      // like the 'Click trái' / 'Click phải' keys below.
+      if (mouseButton != null) {
+        setState(() => modifiers.clear());
+        click(mouseButton);
         return;
       }
       if (label == 'Click trái' || label == 'Click phải') {
@@ -1141,7 +1115,17 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
     final target = GlobalKey();
     keyTargets[target] = press;
-    keyLabels[target] = label;
+    // Highlight id: defaults to the label; the two 'Left' mouse keys pass
+    // distinct keyIds so pressing one does not highlight the other.
+    keyLabels[target] = keyId ?? label;
+    // Step 24, item 3: while Shift is armed (one-shot), the key shows the
+    // character Shift will produce (2 -> @, 1 -> !, ...). The key still
+    // sends its base label; Windows applies the armed Shift, so the typed
+    // character matches the label on screen. Letters already display
+    // uppercase, so they do not visibly change. Caps Lock does not arm
+    // Shift (step 22), so it never changes the labels.
+    final displayLabel =
+        modifiers.contains('Shift') ? shiftedLabel(label) : label;
     return Expanded(
         flex: (units * 100).round(),
         child: Padding(
@@ -1157,7 +1141,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                         // Modern key look (step 23): larger radius, lighter
                         // key surface with a softer border; an armed
                         // modifier / Caps Lock on uses the app teal accent.
-                        color: pressedLabel == label
+                        color: pressedLabel == (keyId ?? label)
                             ? const Color(0xff8b929e)
                             : selected
                                 ? const Color(0xff2bb3a3)
@@ -1169,7 +1153,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                             padding: const EdgeInsets.symmetric(horizontal: 2),
                             child: FittedBox(
                                 fit: BoxFit.scaleDown,
-                                child: Text(label,
+                                child: Text(displayLabel,
                                     style: const TextStyle(
                                         fontSize: 13,
                                         fontWeight: FontWeight.w500,
@@ -1194,35 +1178,52 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               row(1, [
                 for (final c in '`1234567890-='.split('')) laptopKey(c),
                 laptopKey('Backspace', units: 2, command: 'Backspace'),
+                laptopKey('PgUp', command: 'PgUp'),
               ]),
               row(2, [
                 laptopKey('Tab', units: 1.5, command: 'Tab'),
                 for (final c in 'QWERTYUIOP[]'.split('')) laptopKey(c),
                 laptopKey(r'\', units: 1.5),
+                laptopKey('PgDn', command: 'PgDn'),
               ]),
               row(3, [
                 laptopKey('Caps',
                     units: 1.75, command: 'Shift', modifier: true),
                 for (final c in "ASDFGHJKL;'".split('')) laptopKey(c),
                 laptopKey('Enter', units: 2.25, command: 'Enter'),
+                laptopKey('Home', command: 'Home'),
               ]),
+              // Step 24, item 4: inverted-T arrows — ↑ sits at the end of
+              // this row, above ↓, with End (item 6) at the far right. The
+              // right Shift shrinks 2.75 -> 2.0 to make room (row total
+              // 16.25, same as the bottom row, so ↑ is exactly the same
+              // width as ↓ and the other arrows, and every other key keeps
+              // its size). ↑ is a full key, not half-height.
               row(4, [
                 laptopKey('Shift',
                     units: 2.25, command: 'Shift', modifier: true),
                 for (final c in 'ZXCVBNM,./'.split('')) laptopKey(c),
                 laptopKey('Shift',
-                    units: 2.75, command: 'Shift', modifier: true),
+                    units: 2.0, command: 'Shift', modifier: true),
+                laptopKey('↑', command: 'Up'),
+                laptopKey('End', command: 'End'),
               ]),
+              // Step 24, item 2: one 'Left' mouse key on each side of
+              // Space, Alt-sized (1.25), same colors as the other keys.
+              // Space is 4.5 (was 5) to fit them; the row total is 16.25,
+              // same as the row above, so Ctrl/Win/Alt and the arrows keep
+              // their exact widths.
               row(5, [
                 laptopKey('Ctrl', units: 1.25, modifier: true),
                 laptopKey('Win', units: 1.25, modifier: true),
                 laptopKey('Alt', units: 1.25, modifier: true),
-                laptopKey('Space', units: 5, command: 'Space'),
+                laptopKey('Left', units: 1.25, mouseButton: 'left', keyId: 'Left-1'),
+                laptopKey('Space', units: 4.5, command: 'Space'),
+                laptopKey('Left', units: 1.25, mouseButton: 'left', keyId: 'Left-2'),
                 laptopKey('Alt', units: 1.25, modifier: true),
                 laptopKey('Ctrl', units: 1.25, modifier: true),
                 for (final e in const {
                   '←': 'Left',
-                  '↑': 'Up',
                   '↓': 'Down',
                   '→': 'Right'
                 }.entries)
@@ -1375,12 +1376,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               builder: (_) =>
                   widget.settings?.call() ??
                   SettingsPage(
-                      agent: agent,
                       theme: ThemeMode.system,
-                      pollMs: widget.pollMs(),
-                      onSave: (url, mode, ms) async {
-                        agent.baseUrl = url;
-                      })));
+                      onThemeChanged: (_) async {})));
       if (mounted) {
         try {
           await agent.health();

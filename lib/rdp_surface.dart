@@ -355,17 +355,30 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
             child: Card(child: Padding(padding: const EdgeInsets.all(12),
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 if (busy) ...[
-                  // Step 23, item 5: show which connect step we are in
-                  // (native 'phase': creating / connecting / auth) so a slow
-                  // reconnect says where it is stuck; 'Ngắt' still cancels.
-                  Text(state == 'disconnecting'
-                      ? 'Đang ngắt kết nối…'
-                      : (status['phase'] == 'auth'
-                          ? 'Đang xác thực…'
-                          : status['phase'] == 'creating'
-                              ? 'Đang tạo phiên…'
-                              : 'Đang kết nối…')),
-                  TextButton(onPressed: state == 'disconnecting' ? null : disconnect, child: const Text('Ngắt')),
+                  // Step 24, item 5: modern loading — a compact card with a
+                  // spinner, the current connect phase, and a quiet text
+                  // button to cancel. Same phase text as step 23; 'Ngắt'
+                  // still cancels (and so does Android Back).
+                  Row(mainAxisSize: MainAxisSize.min, children: [
+                    const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2.5)),
+                    const SizedBox(width: 12),
+                    Flexible(
+                        child: Text(state == 'disconnecting'
+                            ? 'Đang ngắt kết nối…'
+                            : (status['phase'] == 'auth'
+                                ? 'Đang xác thực…'
+                                : status['phase'] == 'creating'
+                                    ? 'Đang tạo phiên…'
+                                    : 'Đang kết nối…'))),
+                    const SizedBox(width: 4),
+                    TextButton(
+                        onPressed:
+                            state == 'disconnecting' ? null : disconnect,
+                        child: const Text('Ngắt')),
+                  ]),
                 ] else ...[
                   if (state == 'failed') ...[
                     Text(status['error'] as String? ?? 'Kết nối thất bại'),

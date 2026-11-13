@@ -515,4 +515,316 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('Shift armed shows shifted labels and types the shown character',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/25');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(25);
+    // attach() re-sends the current touch mode ('mode'); not part of this test.
+    calls.clear();
+    await messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('state', {'state': 'connected'})),
+        (_) {});
+    await tester.pump();
+    Future<void> tap(String label) async {
+      await tester.tap(find.text(label).first);
+      await tester.pumpAndSettle();
+    }
+
+    // Unshifted labels first.
+    expect(find.text('2'), findsOneWidget);
+    expect(find.text('@'), findsNothing);
+    // Arm Shift: the number row shows its Shift characters.
+    await tap('Shift');
+    expect(find.text('@'), findsOneWidget);
+    expect(find.text('2'), findsNothing);
+    expect(find.text('!'), findsOneWidget);
+    expect(find.text(')'), findsOneWidget);
+    expect(find.text('_'), findsOneWidget);
+    // Typing the key showing '@' sends Shift + the base '2' key, so
+    // Windows receives '@'; the one-shot Shift then clears and the labels
+    // revert to unshifted.
+    calls.clear();
+    await tap('@');
+    expect(calls.map((c) => c.arguments).toList(), [
+      {'vk': 0xa0, 'down': true},
+      {'vk': 0x32, 'down': true},
+      {'vk': 0x32, 'down': false},
+      {'vk': 0xa0, 'down': false},
+    ]);
+    expect(find.text('2'), findsOneWidget);
+    expect(find.text('@'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('RDP Left keys flanking Space click left at the cursor',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/33');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(33);
+    // attach() re-sends the current touch mode ('mode'); not part of this test.
+    calls.clear();
+    // Bottom row: one 'Left' mouse key on each side of Space, Alt-sized;
+    // the arrows are no longer all on this row (item 4 moved ↑ up).
+    expect(
+        tester
+            .widgetList<Text>(find.descendant(
+                of: find.byKey(const ValueKey('keyboard-row-5')),
+                matching: find.byType(Text)))
+            .map((w) => w.data)
+            .toList(),
+        ['Ctrl', 'Win', 'Alt', 'Left', 'Space', 'Left', 'Alt', 'Ctrl', '←', '↓', '→']);
+    expect(find.text('Left'), findsNWidgets(2));
+    // Not connected yet: a Left tap sends nothing.
+    await tester.tap(find.text('Left').first);
+    await tester.pumpAndSettle();
+    expect(calls, isEmpty);
+    await messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('state', {'state': 'connected'})),
+        (_) {});
+    await tester.pump();
+    // Each Left key clicks left at the cursor; no VK is sent ('Left' as a
+    // key label would be the VK_LEFT arrow, 0x125).
+    for (final finder in [find.text('Left').first, find.text('Left').last]) {
+      await tester.tap(finder);
+      await tester.pumpAndSettle();
+      expect(calls.map((c) => c.method), ['click']);
+      expect(calls.single.arguments, {'button': 'left'});
+      calls.clear();
+    }
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('RDP arrow keys form an inverted T with equal up/down size',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/34');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(34);
+    calls.clear();
+    await messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('state', {'state': 'connected'})),
+        (_) {});
+    await tester.pump();
+    // ↑ sits at the end of the Shift row, above ↓; ← ↓ → stay on the
+    // bottom row.
+    List<String?> rowLabels(int index) => tester
+        .widgetList<Text>(find.descendant(
+            of: find.byKey(ValueKey('keyboard-row-$index')),
+            matching: find.byType(Text)))
+        .map((w) => w.data)
+        .toList();
+    expect(rowLabels(4),
+        ['Shift', ...'ZXCVBNM,./'.split(''), 'Shift', '↑', 'End']);
+    expect(rowLabels(5), [
+      'Ctrl',
+      'Win',
+      'Alt',
+      'Left',
+      'Space',
+      'Left',
+      'Alt',
+      'Ctrl',
+      '←',
+      '↓',
+      '→'
+    ]);
+    // ↑ and ↓ are the same size: full keys, no half-height (An's rule).
+    Size keySize(String label) => tester.getSize(find
+        .ancestor(of: find.text(label), matching: find.byType(Container))
+        .first);
+    final up = keySize('↑');
+    final down = keySize('↓');
+    expect(up.width, closeTo(down.width, 1.0));
+    expect(up.height, closeTo(down.height, 1.0));
+    // Each arrow still sends its own VK.
+    Future<void> tap(String label) async {
+      await tester.tap(find.text(label).first);
+      await tester.pumpAndSettle();
+    }
+
+    for (final entry in {
+      '↑': 0x126,
+      '←': 0x125,
+      '↓': 0x128,
+      '→': 0x127,
+    }.entries) {
+      calls.clear();
+      await tap(entry.key);
+      expect(calls.map((c) => c.arguments).toList(), [
+        {'vk': entry.value, 'down': true},
+        {'vk': entry.value, 'down': false},
+      ]);
+    }
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('RDP navigation column sends the right VKs', (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/35');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(35);
+    calls.clear();
+    await messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('state', {'state': 'connected'})),
+        (_) {});
+    await tester.pump();
+    // Step 24, item 6: navigation column at the far right — PgUp in the
+    // number row, PgDn in the QWERTY row, Home in the ASDF row, End in
+    // the Shift row (left of nothing; ↑ sits left of End). Del in the
+    // F row was already there.
+    List<String?> rowLabels(int index) => tester
+        .widgetList<Text>(find.descendant(
+            of: find.byKey(ValueKey('keyboard-row-$index')),
+            matching: find.byType(Text)))
+        .map((w) => w.data)
+        .toList();
+    expect(rowLabels(0).last, 'Del');
+    expect(rowLabels(1).last, 'PgUp');
+    expect(rowLabels(2).last, 'PgDn');
+    expect(rowLabels(3).last, 'Home');
+    expect(rowLabels(4).last, 'End');
+    Future<void> tap(String label) async {
+      await tester.tap(find.text(label).first);
+      await tester.pumpAndSettle();
+    }
+
+    for (final entry in {
+      'PgUp': 0x21,
+      'PgDn': 0x22,
+      'Home': 0x24,
+      'End': 0x23,
+    }.entries) {
+      calls.clear();
+      await tap(entry.key);
+      expect(calls.map((c) => c.arguments).toList(), [
+        {'vk': entry.value, 'down': true},
+        {'vk': entry.value, 'down': false},
+      ]);
+    }
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('RDP connecting shows a modern loading card with phase and spinner',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/44');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return call.method == 'status' ? {'state': 'idle'} : null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(44);
+    await tester.pump();
+    Future<void> event(Map<String, dynamic> state) async {
+      await messenger.handlePlatformMessage(
+          channel.name,
+          const StandardMethodCodec()
+              .encodeMethodCall(MethodCall('state', state)),
+          (_) {});
+      await tester.pump();
+    }
+
+    // Step 24, item 5: a compact card with a spinner, the current phase
+    // text, and a quiet 'Ngắt' text button — not the old big black box.
+    await event({'state': 'connecting', 'phase': 'creating'});
+    expect(find.text('Đang tạo phiên…'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    await event({'state': 'connecting', 'phase': 'auth'});
+    expect(find.text('Đang xác thực…'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    await event({'state': 'connecting'});
+    expect(find.text('Đang kết nối…'), findsOneWidget);
+    await tester.tap(find.text('Ngắt'));
+    await tester.pump();
+    expect(calls.last.method, 'disconnect');
+    await tester.pumpWidget(const SizedBox());
+  });
+
 }
