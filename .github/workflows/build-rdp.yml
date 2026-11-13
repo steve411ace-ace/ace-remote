@@ -30,11 +30,14 @@ jobs:
         with:
           # Override the action default ('tools platform-tools'): tools is obsolete.
           packages: platform-tools
+          # 12266719 = 16.0; supports repository schema 3 and API minor versions.
+          cmdline-tools-version: '12266719'
       - name: Install SDK 37, Build Tools 37.0.0, CMake 4.1.2 and NDK r29
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager 'platforms;android-37' 'build-tools;37.0.0' 'cmake;4.1.2'
+          # API 37 stable is published as 37.0 (not android-37).
+          sdkmanager --channel=0 'platforms;android-37.0' 'build-tools;37.0.0' 'cmake;4.1.2'
           curl -fL --retry 3 https://dl.google.com/android/repository/android-ndk-r29-linux.zip -o "$RUNNER_TEMP/ndk.zip"
           echo "4abbbcdc842f3d4879206e9695d52709603e52dd68d3c1fff04b3b5e7a308ecf  $RUNNER_TEMP/ndk.zip" | sha256sum -c -
           unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP/ndk"
