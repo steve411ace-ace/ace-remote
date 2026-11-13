@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:ace_remote/agent.dart';
 import 'package:ace_remote/main.dart';
 import 'package:ace_remote/rdp_connections.dart';
@@ -265,7 +267,7 @@ void main() {
     expect(await controller.status(), pixels);
   });
 
-  testWidgets('RDP waiting page keeps equal halves and sends no agent traffic',
+  testWidgets('RDP waiting page pins the keyboard to the bottom and the remote fills the rest',
       (tester) async {
     var requests = 0;
     final agent = Agent(
@@ -286,9 +288,18 @@ void main() {
       final remote = tester.getRect(find.byKey(const ValueKey('remote-half')));
       final keyboard =
           tester.getRect(find.byKey(const ValueKey('keyboard-half')));
-      expect(remote.height, size.height / 4);
-      expect(keyboard.height, remote.height);
-      expect(keyboard.top, remote.bottom);
+      // Step 26, item 3: no more fixed 50/50 split. The keyboard is a
+      // fixed-height strip (6 rows + 8dp padding) pinned to the bottom
+      // edge; the remote screen takes all the remaining space above it.
+      final logical = Size(size.width / 2, size.height / 2);
+      final byWidth =
+          (logical.width / 16.25 * 1.15).clamp(44.0, 64.0).toDouble();
+      final rowHeight = min(byWidth, (logical.height - 8) / 6);
+      final kbHeight = rowHeight * 6 + 8;
+      expect(keyboard.height, closeTo(kbHeight, 1.0));
+      expect(remote.height, closeTo(logical.height - kbHeight, 1.0));
+      expect(keyboard.bottom, closeTo(logical.height, 1.0));
+      expect(keyboard.top, closeTo(remote.bottom, 1.0));
       expect(remote.width, size.width / 2);
       await tester.tap(find.text('Esc'));
       await tester.pump(const Duration(seconds: 2));
@@ -499,8 +510,11 @@ void main() {
         tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
     var remote = tester.getRect(find.byKey(const ValueKey('remote-half')));
     var keyboard = tester.getRect(find.byKey(const ValueKey('keyboard-half')));
-    expect(remote.height, 300);
-    expect(keyboard.height, remote.height);
+    // Step 26, item 3: 800x600 logical; row height follows the step 25
+    // formula (56.6), so the keyboard strip is 6*56.6+8 = 347.7 tall
+    // and the remote takes the remaining 252.3.
+    expect(remote.height, closeTo(252.3, 1.0));
+    expect(keyboard.height, closeTo(347.7, 1.0));
     controller.keyboardVisible.value = false;
     await tester.pump();
     expect(find.byKey(const ValueKey('keyboard-half')), findsNothing);
@@ -510,8 +524,8 @@ void main() {
     await tester.pump();
     remote = tester.getRect(find.byKey(const ValueKey('remote-half')));
     keyboard = tester.getRect(find.byKey(const ValueKey('keyboard-half')));
-    expect(remote.height, 300);
-    expect(keyboard.height, remote.height);
+    expect(remote.height, closeTo(252.3, 1.0));
+    expect(keyboard.height, closeTo(347.7, 1.0));
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -922,6 +936,125 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('repeated connecting events do not postpone the watchdog',
+      (tester) async {
+    // Step 26, item 1: FreeRDP's auto-reconnect loop fires a fresh
+    // 'connecting' event per retry (OnReconnecting / OnPreConnect /
+    // OnAuthenticate). Step 25 re-armed the 30s timer on every event,
+    // so the watchdog never fired and the spinner sat forever. The
+    // deadline is absolute now: it is set when the busy episode starts
+    // and phase changes do not move it.
+    const channel = MethodChannel('vn.aceremote.app/rdp/50');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return call.method == 'status' ? {'state': 'idle'} : null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(50);
+    await tester.pump();
+    Future<void> event(Map<String, dynamic> state) async {
+      await messenger.handlePlatformMessage(
+          channel.name,
+          const StandardMethodCodec()
+              .encodeMethodCall(MethodCall('state', state)),
+          (_) {});
+      await tester.pump();
+    }
+
+    await event({'state': 'connecting'});
+    expect(find.text('Đang kết nối…'), findsOneWidget);
+    // Fresh 'connecting' events every 10s, as the auto-reconnect loop
+    // would send them. Each is a new Map, so the listener re-fires even
+    // with identical content — exactly what used to re-arm the timer.
+    // The watchdog must still fire at 30s absolute.
+    await tester.pump(const Duration(seconds: 10));
+    await event({'state': 'connecting'});
+    await tester.pump(const Duration(seconds: 10));
+    await event({'state': 'connecting'});
+    await tester.pump(const Duration(seconds: 9));
+    expect(calls.where((c) => c.method == 'disconnect'), isEmpty);
+    expect(find.text('Đang kết nối…'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+    expect(calls.where((c) => c.method == 'disconnect'), isNotEmpty);
+    expect(find.text('Đang kết nối…'), findsNothing);
+    expect(find.textContaining('Kết nối quá lâu'), findsOneWidget);
+    expect(find.text('Kết nối lại'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('resuming from background auto-reconnects a stuck session',
+      (tester) async {
+    // Step 26, item 1: the session dropped while the app was in the
+    // background and FreeRDP's auto-reconnect loop is stuck on
+    // 'connecting'. Returning from recents must kill the stale attempt
+    // and start one fresh connect with the saved credentials — no tap
+    // on "Kết nối lại" needed. Step 25 only re-queried the status.
+    const channel = MethodChannel('vn.aceremote.app/rdp/51');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    var nativeState = 'idle';
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      if (call.method == 'disconnect') nativeState = 'disconnected';
+      if (call.method == 'status') return {'state': nativeState};
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    FlutterSecureStorage.setMockInitialValues(
+        {rdpUsernameKey: 'saved-user', rdpPasswordKey: 'saved-secret'});
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(51);
+    await tester.pump();
+    Future<void> event(Map<String, dynamic> state) async {
+      await messenger.handlePlatformMessage(
+          channel.name,
+          const StandardMethodCodec()
+              .encodeMethodCall(MethodCall('state', state)),
+          (_) {});
+      await tester.pump();
+    }
+
+    // A previous session connected (arms the resume auto-reconnect),
+    // then dropped into a stuck 'connecting' loop in the background.
+    await event({'state': 'connected'});
+    nativeState = 'connecting';
+    await event({'state': 'connecting'});
+    expect(find.text('Đang kết nối…'), findsOneWidget);
+    calls.clear();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+    // The stale attempt is killed first, then a fresh connect starts
+    // with the saved credentials.
+    expect(calls.where((c) => c.method == 'disconnect'), isNotEmpty);
+    final connects = calls.where((c) => c.method == 'connect').toList();
+    expect(connects, hasLength(1));
+    expect(connects.single.arguments, {
+      'host': '100.101.127.41',
+      'port': 3389,
+      'username': 'saved-user',
+      'password': 'saved-secret',
+    });
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('F row matches number-key width and Delete is wider',
       (tester) async {
     // Step 25, item 5: the F row totals 16 units like the number row, so
@@ -993,6 +1126,24 @@ void main() {
       // All rows share the same height, and ↑ still equals ↓.
       expect(keySize('↑').height, closeTo(keySize('↓').height, 1.0));
       expect(keySize('F1').width, closeTo(keySize('1').width, 1.0));
+      // Step 26, item 4: on the narrow (folded) screen the wide keys
+      // shrink so the letter/number keys get wider. Tab drops to 1.0
+      // units (same as a letter), Shift to 1.5, Backspace to 1.5; on
+      // the wide screen the step 24/25 units stay (Tab 1.5, Shift
+      // 2.25, Backspace 2.0). ↑ still equals ↓ in width at both sizes.
+      // Widths below are Container widths; each key also has 2dp
+      // padding on each side, so add 4 back to compare flex shares.
+      double share(String label) => keySize(label).width + 4;
+      final narrow = size.width < 600;
+      expect(share('Tab'),
+          closeTo(share('A') * (narrow ? 1.0 : 1.5), 1.0));
+      // 'Z' shares Shift's row, so the ratio is exact (rows 3 and 4
+      // have different totals: 16.0 vs 16.25 wide, 15.0 vs 15.0 narrow).
+      expect(share('Shift'),
+          closeTo(share('Z') * (narrow ? 1.5 : 2.25), 1.0));
+      expect(share('Backspace'),
+          closeTo(share('1') * (narrow ? 1.5 : 2.0), 1.0));
+      expect(keySize('↑').width, closeTo(keySize('↓').width, 1.0));
       expect(tester.takeException(), isNull);
     }
     tester.view.resetPhysicalSize();

@@ -1185,6 +1185,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                                         color: Colors.white)))))))));
   }
 
+  /// Step 26, item 3: one place for the row-height formula (step 25).
+  /// keyboardPanel() uses it with its own box, and the RDP layout uses
+  /// it with the page box to size the fixed-height keyboard strip — both
+  /// must agree, or the strip would clip or leave a gap. The height is
+  /// unchanged from step 25 (step 26, item 2 was cancelled: An kept the
+  /// current key height).
+  double _keyboardRowHeight(double maxWidth, double maxHeight) {
+    final rowCount = widget.rdpMode ? 6 : 7;
+    final byWidth = (maxWidth / 16.25 * 1.15).clamp(44.0, 64.0);
+    final byHeight =
+        maxHeight.isFinite ? (maxHeight - 8) / rowCount : byWidth;
+    return min(byWidth, byHeight);
+  }
+
   Widget keyboardPanel() => LayoutBuilder(builder: (context, box) {
         keyTargets.clear();
         keyLabels.clear();
@@ -1195,20 +1209,38 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         // PgUp/PgDn/Home/End labels were scaled tiny by FittedBox). Now
         // the row height follows the key WIDTH (16.25 units across the
         // widest rows), clamped so keys are never shorter than a
-        // comfortable tap target and never taller than a laptop key — and
-        // never taller than the space available (agent mode has a 7th row).
-        // The fixed-height keyboard is centered in its half; the 50/50
-        // split of remote screen / keyboard is unchanged, only the empty
-        // deck shows around the keyboard when the half is taller than it.
-        // The label size follows the row height so single-character labels
+        // comfortable tap target and never taller than a laptop key.
+        // Step 26, item 3: in RDP mode the panel sits in a fixed-height
+        // strip pinned to the bottom edge (the parent sizes the strip
+        // with _keyboardRowHeight, so this box is exactly
+        // rowHeight*rowCount+8 tall and the Column below fills it); in
+        // agent mode it is still centered in its Expanded area. The
+        // label size follows the row height so single-character labels
         // stay proportionate; FittedBox still shrinks long labels
         // (PgUp/PgDn/Home/End, Backspace, Enter) to fit their key.
-        final rowCount = widget.rdpMode ? 6 : 7;
-        final byWidth = (box.maxWidth / 16.25 * 1.15).clamp(44.0, 64.0);
-        final byHeight =
-            box.maxHeight.isFinite ? (box.maxHeight - 8) / rowCount : byWidth;
-        final rowHeight = min(byWidth, byHeight);
+        final rowHeight = _keyboardRowHeight(box.maxWidth, box.maxHeight);
         kbLabelSize = (rowHeight * 0.30).clamp(12.0, 16.0);
+        // Step 26, item 4: on a narrow (folded) screen the wide keys
+        // shrink so the 1-unit letter/number keys get wider (their pixel
+        // width is maxWidth / row total). Narrow = folded Fold6 (~378
+        // logical px); unfolded is ~700+, so it keeps the step 24/25
+        // units. Row totals narrow: F/number 15.5 (F keys still equal
+        // the number keys), QWERTY/ASDF/ZXCV rows 15.0, bottom row 15.05
+        // (rows 4 and 5 stay equal so ↑ still equals ↓). At 378px a
+        // letter key is 378/15.0 = 25.2px wide (was 378/16.25 = 23.3px,
+        // +8%); a number key is 378/15.5 = 24.4px (+5%). The row height
+        // is untouched (step 26, item 2 was cancelled).
+        final narrow = box.maxWidth < 600;
+        final delU = narrow ? 2.0 : 2.5;
+        final backspaceU = narrow ? 1.5 : 2.0;
+        final tabU = narrow ? 1.0 : 1.5;
+        final backslashU = narrow ? 1.0 : 1.5;
+        final capsU = narrow ? 1.25 : 1.75;
+        final enterU = narrow ? 1.75 : 2.25;
+        final shiftLU = narrow ? 1.5 : 2.25;
+        final shiftRU = narrow ? 1.5 : 2.0;
+        final modU = narrow ? 1.15 : 1.25;
+        final spaceU = narrow ? 4.0 : 4.5;
         Widget row(int index, List<Widget> keys) => SizedBox(
             height: rowHeight,
             child: Row(key: ValueKey('keyboard-row-$index'), children: keys));
@@ -1220,28 +1252,29 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               // Step 25, item 5: the F row is 16 units like the number row
               // below it (was 14), so F1-F12 are exactly as wide as the
               // number keys. The extra width goes to Delete (2.5 units,
-              // clearly bigger) and Esc (1.5).
+              // clearly bigger) and Esc (1.5). Narrow mode keeps the two
+              // rows equal (15.5) with Delete at 2.0.
               row(0, [
                 laptopKey('Esc', units: 1.5, command: 'Esc'),
                 for (var i = 1; i <= 12; i++) laptopKey('F$i', command: 'F$i'),
-                laptopKey('Del', units: 2.5, command: 'Delete'),
+                laptopKey('Del', units: delU, command: 'Delete'),
               ]),
               row(1, [
                 for (final c in '`1234567890-='.split('')) laptopKey(c),
-                laptopKey('Backspace', units: 2, command: 'Backspace'),
+                laptopKey('Backspace', units: backspaceU, command: 'Backspace'),
                 laptopKey('PgUp', command: 'PgUp'),
               ]),
               row(2, [
-                laptopKey('Tab', units: 1.5, command: 'Tab'),
+                laptopKey('Tab', units: tabU, command: 'Tab'),
                 for (final c in 'QWERTYUIOP[]'.split('')) laptopKey(c),
-                laptopKey(r'\', units: 1.5),
+                laptopKey(r'\', units: backslashU),
                 laptopKey('PgDn', command: 'PgDn'),
               ]),
               row(3, [
                 laptopKey('Caps',
-                    units: 1.75, command: 'Shift', modifier: true),
+                    units: capsU, command: 'Shift', modifier: true),
                 for (final c in "ASDFGHJKL;'".split('')) laptopKey(c),
-                laptopKey('Enter', units: 2.25, command: 'Enter'),
+                laptopKey('Enter', units: enterU, command: 'Enter'),
                 laptopKey('Home', command: 'Home'),
               ]),
               // Step 24, item 4: inverted-T arrows — ↑ sits at the end of
@@ -1249,13 +1282,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               // right Shift shrinks 2.75 -> 2.0 to make room (row total
               // 16.25, same as the bottom row, so ↑ is exactly the same
               // width as ↓ and the other arrows, and every other key keeps
-              // its size). ↑ is a full key, not half-height.
+              // its size). ↑ is a full key, not half-height. Narrow mode:
+              // both Shifts 1.5, row total 15.0, same as the bottom row
+              // (15.05) so ↑ still equals ↓.
               row(4, [
                 laptopKey('Shift',
-                    units: 2.25, command: 'Shift', modifier: true),
+                    units: shiftLU, command: 'Shift', modifier: true),
                 for (final c in 'ZXCVBNM,./'.split('')) laptopKey(c),
                 laptopKey('Shift',
-                    units: 2.0, command: 'Shift', modifier: true),
+                    units: shiftRU, command: 'Shift', modifier: true),
                 laptopKey('↑', command: 'Up'),
                 laptopKey('End', command: 'End'),
               ]),
@@ -1263,15 +1298,16 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               // 'Right' on the right of Space clicks right. Same size as
               // Alt (1.25), same colors as the other keys. The labels are
               // distinct now, so no keyId is needed for the highlight.
+              // Narrow mode: modifiers 1.15, Space 4.0 (row total 15.05).
               row(5, [
-                laptopKey('Ctrl', units: 1.25, modifier: true),
-                laptopKey('Win', units: 1.25, modifier: true),
-                laptopKey('Alt', units: 1.25, modifier: true),
-                laptopKey('Left', units: 1.25, mouseButton: 'left'),
-                laptopKey('Space', units: 4.5, command: 'Space'),
-                laptopKey('Right', units: 1.25, mouseButton: 'right'),
-                laptopKey('Alt', units: 1.25, modifier: true),
-                laptopKey('Ctrl', units: 1.25, modifier: true),
+                laptopKey('Ctrl', units: modU, modifier: true),
+                laptopKey('Win', units: modU, modifier: true),
+                laptopKey('Alt', units: modU, modifier: true),
+                laptopKey('Left', units: modU, mouseButton: 'left'),
+                laptopKey('Space', units: spaceU, command: 'Space'),
+                laptopKey('Right', units: modU, mouseButton: 'right'),
+                laptopKey('Alt', units: modU, modifier: true),
+                laptopKey('Ctrl', units: modU, modifier: true),
                 for (final e in const {
                   '←': 'Left',
                   '↓': 'Down',
@@ -1463,22 +1499,41 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
             // The keyboard can be hidden entirely so the remote screen
             // fills the whole page. Switching never drops the RDP session
             // and never resets the cursor.
+            // Step 26, item 3: the keyboard is a fixed-height strip
+            // pinned to the bottom edge — NOT half the screen any more.
+            // The remote screen (Expanded) takes all the remaining space
+            // above it, down to the top edge of the keys, like the
+            // unfolded layout. The strip height comes from the same
+            // _keyboardRowHeight formula keyboardPanel() uses, so the
+            // strip is exactly 6 rows + padding tall (no clip, no gap
+            // below the keys). The RDP resolution follows the new
+            // SurfaceView size through the existing DISP path
+            // (surfaceChanged -> scheduleResize); if DISP fails the
+            // session keeps running and the picture letterboxes.
+            // Hiding the keyboard still lets the remote fill the whole
+            // page. Switching never drops the RDP session and never
+            // resets the cursor.
             return ValueListenableBuilder<bool>(
               valueListenable: rdpController.keyboardVisible,
-              builder: (context, kbVisible, _) => Column(children: [
-                Expanded(
-                    child: SizedBox(
-                        key: const ValueKey('remote-half'),
-                        child: RdpConnectionPane(
-                            controller: rdpController,
-                            initialConnection: widget.rdpConnection))),
-                if (kbVisible)
+              builder: (context, kbVisible, _) {
+                final kbHeight = kbVisible
+                    ? _keyboardRowHeight(box.maxWidth, box.maxHeight) * 6 + 8
+                    : 0.0;
+                return Column(children: [
                   Expanded(
                       child: SizedBox(
-                          key: const ValueKey('keyboard-half'),
-                          child:
-                              laptopDeck(keyboardSwipe(keyboardPanel())))),
-              ]),
+                          key: const ValueKey('remote-half'),
+                          child: RdpConnectionPane(
+                              controller: rdpController,
+                              initialConnection: widget.rdpConnection))),
+                  if (kbVisible)
+                    SizedBox(
+                        key: const ValueKey('keyboard-half'),
+                        height: kbHeight,
+                        child:
+                            laptopDeck(keyboardSwipe(keyboardPanel()))),
+                ]);
+              },
             );
           }
           final d = display;

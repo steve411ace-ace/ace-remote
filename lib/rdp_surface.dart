@@ -147,7 +147,8 @@ class RdpConnectionPane extends StatefulWidget {
   State<RdpConnectionPane> createState() => _RdpConnectionPaneState();
 }
 
-class _RdpConnectionPaneState extends State<RdpConnectionPane> {
+class _RdpConnectionPaneState extends State<RdpConnectionPane>
+    with WidgetsBindingObserver {
   late final controller = widget.controller ?? RdpController();
   final host = TextEditingController(text: '100.101.127.41');
   final port = TextEditingController(text: '3389');
@@ -160,21 +161,33 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
   bool passwordEdited = false;
   bool usernameEdited = false;
   Future<void> storageQueue = Future<void>.value();
-  // Step 25, item 3: watchdog for a stuck connecting/disconnecting state.
-  // The busy overlay shows whenever the native state is 'connecting' or
-  // 'disconnecting', and nothing in the flow ever timed that out: if the
-  // RDP session drops while the app is in the background (FreeRDP
-  // auto-reconnect retries up to 20 times, each with its own network
-  // timeouts) or a native state event is lost, the spinner can sit there
-  // forever and the only way out was Android Back. The watchdog bounds it
-  // to 30 seconds: a normal local connect finishes in a few seconds, so
-  // anything still busy after 30s is stale and gets cancelled, with the
-  // form (and the saved credentials) back for a manual reconnect.
+  // Step 26, item 1: ABSOLUTE watchdog deadline for a stuck
+  // connecting/disconnecting state. Step 25 re-armed the 30s timer on
+  // every phase event — but FreeRDP's auto-reconnect loop (up to 20
+  // retries; each retry fires OnReconnecting / OnPreConnect /
+  // OnAuthenticate, i.e. a fresh 'connecting' event every few seconds)
+  // kept resetting it, so the timer never elapsed and the spinner sat
+  // forever ("Đang kết nối..." hoài). Now the deadline is set ONCE,
+  // when the busy episode STARTS (_busySince), and phase changes do not
+  // move it; _busyWatchdog is a single timer that fires at that
+  // deadline. Re-querying the status (_resumeRdp) also re-fires this
+  // listener, but _busySince ??= / _busyWatchdog ??= keep the original
+  // deadline.
   Timer? _busyWatchdog;
+  DateTime? _busySince;
+  // Step 26, item 1: true once a session has connected. The resume
+  // handler only auto-reconnects a session the user actually had: it
+  // never auto-connects a fresh page (never connected) and never
+  // reconnects after the user tapped "Ngắt" to cancel.
+  bool _resumeReconnectArmed = false;
+  // Guards _resumeReconnect() so two resumes (or a resume racing the
+  // watchdog) can never start two fresh connects.
+  bool _resumeReconnectRunning = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     controller.addListener(connectionChanged);
     final connection = widget.initialConnection;
     if (connection != null) {
@@ -241,19 +254,25 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
   }
 
   void connectionChanged() {
-    // Step 25, item 3: (re)arm the stuck-connect watchdog while the native
-    // side is busy. Every phase change (creating -> auth -> connecting)
-    // re-arms it, so a slow-but-progressing connect is never cut off; a
-    // state that stops changing for 30s is treated as stuck.
+    // Step 26, item 1: the busy-episode deadline is set ONCE (see the
+    // _busySince comment above). A phase change (creating -> auth ->
+    // connecting) or a status re-query only re-enters this listener; it
+    // must not move the deadline, or the FreeRDP auto-reconnect loop
+    // (a fresh 'connecting' event per retry) postpones the watchdog
+    // forever — the exact step 25 failure.
     final busyState = controller.value['state'];
     if (busyState == 'connecting' || busyState == 'disconnecting') {
-      _busyWatchdog?.cancel();
-      _busyWatchdog = Timer(const Duration(seconds: 30), _onBusyTimeout);
+      _busySince ??= DateTime.now();
+      _busyWatchdog ??=
+          Timer(const Duration(seconds: 30), _onBusyTimeout);
     } else {
       _busyWatchdog?.cancel();
       _busyWatchdog = null;
+      _busySince = null;
     }
     if (controller.isConnected) {
+      // A live session arms the resume auto-reconnect (step 26, item 1).
+      _resumeReconnectArmed = true;
       if (pendingPassword != null) {
         final secret = pendingPassword!;
         pendingPassword = null;
@@ -299,16 +318,21 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
     }
   }
 
-  /// Step 25, item 3: the busy state has not changed for 30 seconds, so
-  /// the connect/disconnect attempt is stale. Cancel it on the native side
-  /// (stop() cancels a pending connect or disconnects a live session) and,
-  /// if the native side never reports back, force the Dart state to
-  /// 'failed' so the spinner goes away and the user gets the form with a
-  /// "Kết nối lại" button instead of an endless spinner. A late native
-  /// event after this is harmless: 'disconnected' matches, and a late
-  /// 'connected' cannot happen here because stop() sets stopping=true and
-  /// OnConnectionSuccess refuses to report 'connected' while stopping.
+  /// Step 26, item 1: the busy episode has run past its ABSOLUTE 30s
+  /// deadline (set when the episode started; phase changes do not move
+  /// it), so the connect/disconnect attempt is stale. Cancel it on the
+  /// native side (stop() cancels a pending connect or disconnects a live
+  /// session) and, if the native side never reports back, force the Dart
+  /// state to 'failed' so the spinner goes away and the user gets the
+  /// form with a "Kết nối lại" button instead of an endless spinner. A
+  /// late native event after this is harmless: 'disconnected' matches,
+  /// and a late 'connected' cannot happen here because stop() sets
+  /// stopping=true and OnConnectionSuccess refuses to report 'connected'
+  /// while stopping. The deadline is cleared so a later busy episode
+  /// arms a fresh timer.
   Future<void> _onBusyTimeout() async {
+    _busyWatchdog = null;
+    _busySince = null;
     if (!mounted) return;
     final state = controller.value['state'];
     if (state != 'connecting' && state != 'disconnecting') return;
@@ -324,6 +348,89 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
     }
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Step 26, item 1: returning from the background is when a dropped
+    // session must come back by itself. _RemotePageState._resumeRdp()
+    // only re-queries the native status (it never reconnects), so this
+    // pane — which owns the saved credentials and connect() — does the
+    // real work here.
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_resumeReconnect());
+    }
+  }
+
+  /// Step 26, item 1: reconnect for real after returning from the
+  /// background. If the session is still healthy ('connected') do
+  /// nothing; otherwise kill the stale attempt (if any) and start one
+  /// fresh connect with the saved credentials, so the desktop comes
+  /// back without the user tapping anything. At most one fresh connect
+  /// per resume; a failure ends on the form with a "Kết nối lại"
+  /// button (no loop). Never runs for a page that never connected, or
+  /// after the user tapped "Ngắt" (see _cancelConnect).
+  Future<void> _resumeReconnect() async {
+    if (!mounted || _resumeReconnectRunning) return;
+    if (controller.isConnected) return;
+    if (!_resumeReconnectArmed) return;
+    _resumeReconnectRunning = true;
+    try {
+      final state = controller.value['state'];
+      if (state == 'connecting' || state == 'disconnecting') {
+        // A stale attempt is still running (FreeRDP auto-reconnect
+        // loop). Stop it first: the native 'connect' call refuses while
+        // attempt != null ("Phiên trước chưa kết thúc").
+        await disconnect();
+        // Wait for the native side to settle (attempt freed) before
+        // starting a fresh connect; at most ~5s.
+        var settled = false;
+        for (var i = 0; i < 25; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+          if (!mounted) return;
+          final s = await controller.status();
+          final st = s?['state'];
+          if (st != 'connecting' && st != 'disconnecting') {
+            settled = true;
+            break;
+          }
+        }
+        if (!settled) {
+          // The old session is wedged; do not pile a new connect on
+          // top of it (native would reject it as "busy"). Leave the
+          // form so the user can tap "Kết nối lại".
+          if (mounted) {
+            setState(() => localError =
+                'Phiên cũ chưa kết thúc. Hãy bấm Kết nối lại.');
+          }
+          return;
+        }
+      }
+      if (!mounted) return;
+      // Refill the form from the saved credentials (the 'disconnected'
+      // event already refills via connectionChanged, but reload
+      // explicitly so the fields are filled even if that event was
+      // lost while the app was in the background).
+      if (widget.initialConnection != null) {
+        await _loadConnectionCredentials(autoConnect: false);
+      } else {
+        await restoreCredentials();
+      }
+      if (!mounted) return;
+      if (username.text.trim().isEmpty || password.text.isEmpty) return;
+      await connect();
+    } finally {
+      _resumeReconnectRunning = false;
+    }
+  }
+
+  /// The "Ngắt" button: the user explicitly cancels the connect, so the
+  /// resume handler must not auto-reconnect later. (The watchdog's
+  /// _onBusyTimeout calls disconnect() directly and does NOT disarm:
+  /// a stuck attempt is not the user's choice.)
+  Future<void> _cancelConnect() async {
+    _resumeReconnectArmed = false;
+    await disconnect();
+  }
+
   void queueStorage(Future<void> Function() action) {
     storageQueue = storageQueue.then((_) => action()).catchError((Object error) {
       if (mounted) setState(() => localError = 'Không cập nhật được mật khẩu đã lưu.');
@@ -332,8 +439,10 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _busyWatchdog?.cancel();
     _busyWatchdog = null;
+    _busySince = null;
     controller.removeListener(connectionChanged);
     pendingPassword = null;
     pendingUsername = null;
@@ -426,7 +535,7 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane> {
                     const SizedBox(width: 4),
                     TextButton(
                         onPressed:
-                            state == 'disconnecting' ? null : disconnect,
+                            state == 'disconnecting' ? null : _cancelConnect,
                         child: const Text('Ngắt')),
                   ]),
                 ] else ...[
