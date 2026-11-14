@@ -1310,6 +1310,8 @@ void main() {
     // a pill; a real laptop trackpad is only gently rounded. Pad width
     // 60% -> 40% of the strip (MacBook-like): at 60% it looked like a
     // wide bar, not a laptop trackpad.
+    // Step 44: 40% -> 35% — An picked 35% after seeing the 40%-vs-35%
+    // comparison (Dell XPS proportion, a touch more balanced).
     final padBox = tester.widget<Container>(
         find.byKey(const ValueKey('trackpad-pad')));
     expect((padBox.decoration as BoxDecoration?)?.borderRadius,
@@ -1323,9 +1325,9 @@ void main() {
         [const Color(0xff48494f), const Color(0xff343539)]);
     expect((padBox.decoration as BoxDecoration?)?.boxShadow?.length, 1);
     expect(tester.getSize(find.byKey(const ValueKey('trackpad-pad'))).width,
-        closeTo(316.8, 2.0));
+        closeTo(277.2, 2.0));
     expect(tester.getTopLeft(find.byKey(const ValueKey('trackpad-pad'))).dx,
-        closeTo(241.6, 2.0));
+        closeTo(261.4, 2.0));
     expect(find.byIcon(Icons.touch_app_outlined), findsNothing);
     // Unfolded + off: no area, full-height keys.
     await pumpWith(const Size(800, 800), false);

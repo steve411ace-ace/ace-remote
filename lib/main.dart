@@ -1842,6 +1842,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               // rộng quá, trông như thanh ngang. Trackpad laptop thật chỉ
               // bo nhẹ và chỉ rộng khoảng 32–40% thân máy (MacBook ~40%)
               // — bo xuống 8, rộng xuống 40% cho đúng tỉ lệ laptop.
+              // Step 44 (An, sau khi xem so sánh 40% với 35%): 40% vẫn
+              // hơi rộng, nhỏ thêm 5% xuống 35% (tỉ lệ Dell XPS) cho
+              // cân đối hơn.
               if (showTrackpadArea) SizedBox(height: trackpadGap),
               if (showTrackpadArea)
                 SizedBox(
@@ -1852,7 +1855,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                         onTap: () => unawaited(rdpController
                             .clickAtLastPosition('left')),
                         child: LayoutBuilder(builder: (context, areaBox) {
-                          final padWidth = areaBox.maxWidth * 0.4;
+                          final padWidth = areaBox.maxWidth * 0.35;
                           return Center(
                               child: Container(
                                   key: const ValueKey('trackpad-pad'),

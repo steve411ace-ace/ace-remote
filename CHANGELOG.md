@@ -6,6 +6,12 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.12+29] - 2026-11-14
+
+- Miếng trackpad thu hẹp thêm 5% (40% → 35% chiều rộng dải, tỉ lệ
+  Dell XPS) cho cân đối hơn. An chốt 35% sau khi xem hình so sánh
+  40% với 35% cùng tỉ lệ.
+
 ## [1.5.11+28] - 2026-11-14
 
 - Cả bàn phím giờ như phím laptop thật: mỗi phím có độ bóng nhẹ (trên
