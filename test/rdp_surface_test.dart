@@ -1427,6 +1427,80 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('step 46: holding a key repeats it like a real keyboard',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/41');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    tester.view.physicalSize = const Size(800, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(41);
+    calls.clear();
+    await messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('state', {'state': 'connected'})),
+        (_) {});
+    await tester.pump();
+    await tester.pumpAndSettle();
+    List<MethodCall> backspaces() => calls
+        .where((c) =>
+            c.method == 'key' && c.arguments['vk'] == 0x08)
+        .toList();
+    // Hold Backspace 700ms: first repeat at 500ms, then every 50ms
+    // (500, 550, 600, 650, 700) = 5 presses = 10 key calls (down+up).
+    // NOTE: no pumpAndSettle() while held — it advances the fake clock
+    // 100ms per pump and would fire extra repeats. Zero pumps flush the
+    // queued sends without moving time.
+    final hold = await tester
+        .startGesture(tester.getCenter(find.text('Backspace').first));
+    await tester.pump(const Duration(milliseconds: 700));
+    await tester.pump();
+    await tester.pump();
+    expect(backspaces().length, 10);
+    // Release: no extra press — the repeats already covered the hold.
+    await hold.up();
+    await tester.pump();
+    await tester.pump();
+    expect(backspaces().length, 10);
+    // A quick tap still sends exactly one press.
+    calls.clear();
+    await tester.tap(find.text('Backspace').first);
+    await tester.pumpAndSettle();
+    expect(backspaces().length, 2);
+    // Holding Shift never repeats (it arms/disarms, it is not a keystroke).
+    calls.clear();
+    final shiftHold =
+        await tester.startGesture(tester.getCenter(find.text('Shift').first));
+    await tester.pump(const Duration(milliseconds: 700));
+    await tester.pump();
+    await tester.pump();
+    expect(
+        calls.where((c) => c.method == 'key' && c.arguments['vk'] == 0x10),
+        isEmpty);
+    await shiftHold.up();
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('step 34: RdpController mouseMove/mouseButton call the channel',
       (tester) async {
     const channel = MethodChannel('vn.aceremote.app/rdp/36');

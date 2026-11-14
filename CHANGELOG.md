@@ -6,6 +6,13 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.14+31] - 2026-11-14
+
+- Giữ phím để lặp như bàn phím thật: giữ Backspace xóa liên tục, giữ
+  mũi tên di chuyển liên tục (nhấn đầu sau 500ms, lặp mỗi 50ms).
+  Phím Shift/Ctrl/Alt/Win, Caps và 2 phím click chuột không lặp.
+  Chỉ ở chế độ RDP (ở chế độ agent, giữ phím là kéo chuột như cũ).
+
 ## [1.5.13+30] - 2026-11-14
 
 - Ẩn con trỏ hệ thống Android trên màn hình remote: cắm chuột rời vào

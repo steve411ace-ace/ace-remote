@@ -1406,6 +1406,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Widget trackpad({bool translucent = false, Widget? child}) => LayoutBuilder(
       builder: (context, box) => KeyboardSurface(
             keyAt: child == null ? null : keyAt,
+            labelAt: child == null ? null : keyLabelAt,
+            // Step 46 (An): hold a key to repeat it, like a real keyboard
+            // — RDP mode only. In agent mode a 500ms hold starts a mouse
+            // drag instead (existing behaviour), so repeat stays off there.
+            repeatKeys: widget.rdpMode,
             onMove: (delta) {
               if (widget.rdpMode) return;
               final d = display;
@@ -1418,20 +1423,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
             onPressed: child == null
                 ? null
                 : (position) {
-                    String? label;
-                    if (position != null) {
-                      for (final entry in keyLabels.entries) {
-                        final box =
-                            entry.key.currentContext?.findRenderObject();
-                        if (box is RenderBox &&
-                            box.hasSize &&
-                            (box.localToGlobal(Offset.zero) & box.size)
-                                .contains(position)) {
-                          label = entry.value;
-                          break;
-                        }
-                      }
-                    }
+                    final label =
+                        position == null ? null : keyLabelAt(position);
                     if (mounted) setState(() => pressedLabel = label);
                   },
             onClick: (button) {
@@ -1461,6 +1454,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   VoidCallback? keyAt(Offset position) {
     for (final entry in keyTargets.entries) {
+      final box = entry.key.currentContext?.findRenderObject();
+      if (box is RenderBox &&
+          box.hasSize &&
+          (box.localToGlobal(Offset.zero) & box.size).contains(position)) {
+        return entry.value;
+      }
+    }
+    return null;
+  }
+
+  /// Label of the key under a point, if any (shared by the highlight and
+  /// by step 46's repeat check).
+  String? keyLabelAt(Offset position) {
+    for (final entry in keyLabels.entries) {
       final box = entry.key.currentContext?.findRenderObject();
       if (box is RenderBox &&
           box.hasSize &&
@@ -2309,6 +2316,8 @@ class KeyboardSurface extends StatefulWidget {
       required this.onDrag,
       this.child,
       this.keyAt,
+      this.labelAt,
+      this.repeatKeys = false,
       this.onPressed});
   final void Function(Offset) onMove;
   final void Function(String) onClick;
@@ -2317,6 +2326,10 @@ class KeyboardSurface extends StatefulWidget {
   final Widget? child;
   final void Function(Offset?)? onPressed;
   final VoidCallback? Function(Offset)? keyAt;
+  // Step 46: label of the key under a point, and whether holding a key
+  // repeats it (RDP mode only — see trackpad()).
+  final String? Function(Offset)? labelAt;
+  final bool repeatKeys;
   @override
   State<KeyboardSurface> createState() => _KeyboardSurfaceState();
 }
@@ -2324,12 +2337,48 @@ class KeyboardSurface extends StatefulWidget {
 class _KeyboardSurfaceState extends State<KeyboardSurface> {
   final Map<int, Offset> points = {};
   Timer? hold;
+  Timer? repeat;
   bool moved = false, two = false, dragging = false;
   double distance = 0;
   Offset pending = Offset.zero;
   VoidCallback? pressedKey;
+  // Step 46: keys that must never repeat — modifiers arm/disarm, Caps
+  // toggles, and the Left/Right (and agent 'Click …') keys are mouse
+  // clicks, not keystrokes.
+  static const _noRepeat = {
+    'Shift',
+    'Ctrl',
+    'Alt',
+    'Win',
+    'Caps',
+    'Left',
+    'Right',
+    'Click trái',
+    'Click phải',
+  };
+  void _repeatTick() {
+    // Still held, one finger, not moved: send the key again, then
+    // schedule the next repeat. The first tick comes 500ms after the
+    // press (same delay as the hold timer), then every 50ms — the usual
+    // typematic rhythm. The tap-up press is already skipped for holds
+    // past 500ms (the dragging branch takes precedence), so a hold
+    // never double-fires on release.
+    if (points.length != 1 || moved || two || pressedKey == null) return;
+    pressedKey!.call();
+    repeat = Timer(const Duration(milliseconds: 50), _repeatTick);
+  }
+
+  void _startRepeat(Offset position) {
+    repeat?.cancel();
+    if (!widget.repeatKeys) return;
+    final label = widget.labelAt?.call(position);
+    if (label == null || _noRepeat.contains(label)) return;
+    repeat = Timer(const Duration(milliseconds: 500), _repeatTick);
+  }
+
   void finish() {
     hold?.cancel();
+    repeat?.cancel();
     widget.onPressed?.call(null);
     if (dragging) {
       widget.onDrag(false);
@@ -2341,6 +2390,7 @@ class _KeyboardSurfaceState extends State<KeyboardSurface> {
   @override
   void dispose() {
     hold?.cancel();
+    repeat?.cancel();
     if (dragging) {
       widget.onDrag(false);
     }
@@ -2358,12 +2408,14 @@ class _KeyboardSurfaceState extends State<KeyboardSurface> {
             pending = Offset.zero;
             pressedKey = widget.keyAt?.call(e.position);
             widget.onPressed?.call(e.position);
+            _startRepeat(e.position);
           }
           points[e.pointer] = e.localPosition;
           if (points.length > 1) {
             two = true;
             widget.onPressed?.call(null);
             hold?.cancel();
+            repeat?.cancel();
             if (dragging) {
               widget.onDrag(false);
               dragging = false;
@@ -2391,6 +2443,7 @@ class _KeyboardSurfaceState extends State<KeyboardSurface> {
             moved = true;
             widget.onPressed?.call(null);
             hold?.cancel();
+            repeat?.cancel();
           }
           if (!moved) {
             return;
@@ -2406,6 +2459,7 @@ class _KeyboardSurfaceState extends State<KeyboardSurface> {
           points.remove(e.pointer);
           if (points.isEmpty) {
             hold?.cancel();
+            repeat?.cancel();
             if (dragging) {
               widget.onDrag(false);
               dragging = false;
