@@ -16,9 +16,15 @@
      - Trackpad / Bàn phím are pill containers with an icon + a label, so
        the provider can tint the icon and the label separately for the
        ON (teal, white) / OFF (grey, muted) states.
-     - The "Kết nối" button is GONE: tapping the info area already opens
-       the app and connects. All three remaining buttons are handled
-       natively by the provider (broadcast intents) and never open the app.
+     - The "Kết nối" button is GONE. Step 31: tapping ANYWHERE on the
+       widget opens the app and connects — the provider attaches the
+       launch intent to the root layout, and taps bubble up to it from
+       every child without its own handler. All three remaining buttons
+       are handled natively by the provider (broadcast intents) and never
+       open the app.
+     - The rounded background is drawn by the provider as a bitmap at the
+       widget's real aspect ratio (step 31): 28dp corners, 1dp border
+       (Thuoc Vui standard), so the corners stay circular on any size.
      Buttons are clickable containers: the provider attaches a
      PendingIntent to each one (RemoteViews has no onClick). -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -39,7 +45,10 @@
         android:orientation="vertical"
         android:padding="12dp">
 
-        <!-- Info row: tap = open the app and connect to this connection. -->
+        <!-- Info row (step 31: the tap handler is on the root layout,
+             so tapping anywhere on the widget — icon, name, address,
+             status, gaps — opens the app and connects; only the 2 pills
+             and the switch key have their own handlers). -->
         <LinearLayout
             android:id="@+id/widget_info"
             android:layout_width="match_parent"

@@ -15,9 +15,11 @@ import android.net.Uri
 import android.util.Log
 import android.view.View
 import android.widget.RemoteViews
+import es.antonborri.home_widget.HomeWidgetLaunchIntent
 import es.antonborri.home_widget.HomeWidgetProvider
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.roundToInt
 
 /**
  * Step 27: home-screen widget 4x2 (AppWidgetProvider + RemoteViews, XML —
@@ -25,13 +27,23 @@ import org.json.JSONObject
  * android/app/build.gradle, which is off-limits because it holds the
  * fixed-signing-key config from step 20).
  *
- * Step 29: ALL widget buttons are handled NATIVE here, without opening the
- * app. Only tapping the connection info area opens the app (and connects).
- * The old "Connect" button is gone — the info area is the only way in.
- * The widget was also redesigned (Material 3, modern): an icon tile with a
- * real monitor vector icon, a circular swap button with a real vector icon
- * (no more "⇄" character, which some fonts render as a hollow box), and
- * toggle pills with icon + label.
+ * Step 31: tapping ANYWHERE on the widget (except the 3 native buttons)
+ * opens the app and connects — the launch PendingIntent is attached to
+ * the widget ROOT, and taps on child views without their own handler
+ * bubble up to it. (Step 29 attached the tap only to the info row, and
+ * used a hand-rolled ACTION_VIEW intent: MainActivity has no ACTION_VIEW
+ * + aceremote intent-filter, so the tap resolved to nothing, and the
+ * home_widget plugin only delivers URIs for its own LAUNCH action — so
+ * even a resolved VIEW tap would never reach _handleWidgetUri. The fix
+ * uses the plugin's own HomeWidgetLaunchIntent.getActivity: an explicit
+ * intent to MainActivity, LAUNCH action, URI as data — the exact
+ * mechanism step 27 used, which worked.)
+ * Corner radius is the Thuoc Vui standard (skill §3.3): 28dp, 1dp border.
+ * The bitmap is drawn at the widget's REAL aspect ratio (from
+ * AppWidgetManager options) so fitXY stretches it uniformly and the
+ * corners stay circular — the old fixed 400x200 bitmap was stretched
+ * non-uniformly (the Fold6 widget is ~2.5:1, not 2:1), which made the
+ * corners elliptical ("bo không đều") and too round.
  *
  * How the native actions work (verified against the real plugin sources,
  * shared_preferences_android 2.4.7 / shared_preferences 2.5.3):
@@ -64,8 +76,12 @@ import org.json.JSONObject
  * - Toggle keyboard: flips `keyboard` of the current connection.
  * - Switch: cycles to the next saved connection (favorites first),
  *   wraps around, stores the new current id.
- * Info area tap: launch intent (aceremote://connect/<id>) — opens the app
- * and connects, exactly as in step 27.
+ * Tap anywhere else on the widget (root layout): launch intent
+ * (aceremote://connect/<id>, or aceremote://open when nothing is
+ * saved) — opens the app and connects. Step 31: the handler sits on
+ * the ROOT view, not just the info row, so icon, name, address,
+ * status, gaps and empty space all open the app; only the 3 buttons
+ * above keep their own handlers.
  *
  * Each button gets a PendingIntent.getBroadcast with its own action.
  * onReceive intercepts those actions, updates the prefs + the widget
@@ -188,12 +204,18 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
     ) {
         for (appWidgetId in appWidgetIds) {
             val views = RemoteViews(context.packageName, R.layout.ace_remote_widget)
-            bind(context, views, widgetData)
+            bind(context, appWidgetManager, appWidgetId, views, widgetData)
             appWidgetManager.updateAppWidget(appWidgetId, views)
         }
     }
 
-    private fun bind(context: Context, views: RemoteViews, data: SharedPreferences) {
+    private fun bind(
+        context: Context,
+        appWidgetManager: AppWidgetManager,
+        appWidgetId: Int,
+        views: RemoteViews,
+        data: SharedPreferences,
+    ) {
         val name = data.getString("widget_name", null)
         val address = data.getString("widget_address", null)
         val status = data.getString("widget_status", null)
@@ -216,10 +238,12 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
 
         // Rounded background with the opacity applied (0% = invisible).
         // Only the background carries the opacity — text and buttons stay
-        // fully opaque (step 27 mechanism, unchanged).
+        // fully opaque (step 27 mechanism, unchanged). Step 31: the bitmap
+        // is drawn at the widget's real aspect ratio (28dp corners, 1dp
+        // border — Thuoc Vui standard), so fitXY stretches it uniformly.
         views.setImageViewBitmap(
             R.id.widget_bg,
-            roundedBackground(bgColor, alpha)
+            roundedBackground(appWidgetManager, appWidgetId, bgColor, alpha, dark)
         )
 
         // --- Info area (tap = open the app and connect) ---
@@ -280,21 +304,26 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
             R.id.widget_btn_keyboard_icon, R.id.widget_btn_keyboard_label,
             keyboard, offPill, offText)
 
-        // --- Info area tap: the ONLY way to open the app from the widget ---
-        val infoUri = if (hasConnection) {
+        // --- Tap anywhere (except the 3 native buttons) = open the app
+        // and connect (step 31). The launch PendingIntent is attached to
+        // the widget ROOT: taps on child views without their own handler
+        // (icon tile, name, address, status, empty space, background)
+        // bubble up to it, while the 2 pills and the switch key keep their
+        // own broadcast handlers and never open the app. The old
+        // ACTION_VIEW intent on widget_info is gone — see the class doc
+        // for why it never opened the app. Uses the plugin's own launch
+        // helper (explicit MainActivity + LAUNCH action + URI as data),
+        // which also handles the Android 14+ background-activity-start
+        // allowance; the plugin delivers the URI to Dart via
+        // initiallyLaunchedFromHomeWidget / widgetClicked.
+        val openUri = if (hasConnection) {
             Uri.parse("aceremote://connect/$connectionId")
         } else {
             Uri.parse("aceremote://open")
         }
-        val infoIntent = Intent(Intent.ACTION_VIEW, infoUri).apply {
-            `package` = context.packageName
-        }
         views.setOnClickPendingIntent(
-            R.id.widget_info,
-            PendingIntent.getActivity(
-                context, 100, infoIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            ),
+            R.id.widget_root,
+            HomeWidgetLaunchIntent.getActivity(context, MainActivity::class.java, openUri),
         )
     }
 
@@ -336,24 +365,85 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
         const val ACTION_NEXT_CONNECTION =
             "vn.aceremote.app.widget.ACTION_NEXT_CONNECTION"
 
-        // Bitmap for the rounded background: 400x200 (~320 KB, well under
-        // the RemoteViews parcel limit). Corner radius 48px ≈ 20dp at
-        // ~2.5x density; the solid fill stretches cleanly to any size.
-        private const val BG_WIDTH = 400
-        private const val BG_HEIGHT = 200
-        private const val BG_RADIUS = 48f
+        // Background bitmap (step 31, Thuoc Vui standard): 28dp corner
+        // radius, 1dp border. The bitmap is drawn at the widget's REAL
+        // aspect ratio (from AppWidgetManager options) so the fitXY stretch
+        // is uniform and the corners stay circular. The old fixed 400x200
+        // bitmap was stretched non-uniformly — the Fold6 widget is ~2.5:1,
+        // not 2:1 — so the corners came out elliptical ("bo không đều")
+        // and too round (48px ≈ 38x31dp on screen). Bitmap width is fixed
+        // at 480px (~380 KB max, well under the RemoteViews parcel limit);
+        // the radius/border are computed in bitmap px from dp (density
+        // cancels out: radiusPx = 28 * bitmapWidth / widgetWidthDp).
+        private const val BG_WIDTH = 480
+        private const val CORNER_RADIUS_DP = 28f
+        private const val BORDER_WIDTH_DP = 1f
+        private const val FALLBACK_WIDTH_DP = 250
+        private const val FALLBACK_HEIGHT_DP = 110
 
-        /** Solid rounded-rect bitmap in [color] with the given [alpha]. */
-        fun roundedBackground(color: Int, alpha: Int): Bitmap {
-            val bitmap = Bitmap.createBitmap(BG_WIDTH, BG_HEIGHT, Bitmap.Config.ARGB_8888)
+        /** Solid rounded-rect bitmap in [color] with the given [alpha],
+         * drawn at the widget's real aspect ratio with 28dp corners and a
+         * 1dp border (Thuoc Vui standard). */
+        fun roundedBackground(
+            manager: AppWidgetManager,
+            appWidgetId: Int,
+            color: Int,
+            alpha: Int,
+            dark: Boolean,
+        ): Bitmap {
+            // Widget size in dp in the current orientation; fall back to
+            // the declared 4x2 minimum when the options are unavailable.
+            val options = try {
+                manager.getAppWidgetOptions(appWidgetId)
+            } catch (e: Exception) {
+                null
+            }
+            var widthDp = options?.getInt(
+                AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, 0) ?: 0
+            var heightDp = options?.getInt(
+                AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 0) ?: 0
+            if (widthDp <= 0 || heightDp <= 0) {
+                widthDp = FALLBACK_WIDTH_DP
+                heightDp = FALLBACK_HEIGHT_DP
+            }
+            // A 4x2 widget is always in this range; the clamp only guards
+            // against bogus option values breaking the aspect ratio.
+            val aspect = (widthDp.toFloat() / heightDp).coerceIn(1.5f, 3.5f)
+            val bw = BG_WIDTH
+            val bh = (bw / aspect).roundToInt().coerceIn(160, 320)
+            // Bitmap px per dp; the on-screen radius is then exactly 28dp
+            // and the border exactly 1dp, on any density or widget size.
+            val pxPerDp = bw.toFloat() / widthDp
+            val radius = CORNER_RADIUS_DP * pxPerDp
+            val stroke = (BORDER_WIDTH_DP * pxPerDp).coerceAtLeast(1f)
+
+            val bitmap = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            val rect = RectF(0f, 0f, bw.toFloat(), bh.toFloat())
+            val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 this.color = color
                 this.alpha = alpha
             }
+            canvas.drawRoundRect(rect, radius, radius, fill)
+            // 1dp border, drawn just inside the fill's edge so it is never
+            // clipped. Subtle by design (white 12% on dark, black 10% on
+            // light); its alpha is scaled by the same opacity, so a fully
+            // transparent widget has no border either.
+            val borderAlpha = ((if (dark) 31 else 26) * alpha) / 255
+            val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = stroke
+                this.color = if (dark) {
+                    Color.argb(borderAlpha, 255, 255, 255)
+                } else {
+                    Color.argb(borderAlpha, 0, 0, 0)
+                }
+            }
+            val inset = stroke / 2f
+            val innerRadius = (radius - inset).coerceAtLeast(0f)
             canvas.drawRoundRect(
-                RectF(0f, 0f, BG_WIDTH.toFloat(), BG_HEIGHT.toFloat()),
-                BG_RADIUS, BG_RADIUS, paint
+                RectF(inset, inset, bw - inset, bh - inset),
+                innerRadius, innerRadius, border
             )
             return bitmap
         }

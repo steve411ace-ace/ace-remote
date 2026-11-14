@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:ace_remote/agent.dart';
 import 'package:ace_remote/main.dart';
 import 'package:ace_remote/rdp_connections.dart';
@@ -8,6 +10,12 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+// Step 31 tests write straight to the underlying prefs store (the same
+// thing Kotlin does) to simulate an external change. The platform
+// interface is a transitive dependency of shared_preferences; this is a
+// test-only use, so the version in pubspec.yaml is left untouched.
+// ignore: depend_on_referenced_packages
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -121,6 +129,93 @@ void main() {
     expect(all.map((c) => c.id).toList(), [plain.id, starred.id, 'ace']);
     expect(all.firstWhere((c) => c.id == plain.id).trackpadMode, isFalse);
     expect(all.firstWhere((c) => c.id == plain.id).keyboardVisible, isTrue);
+  });
+
+  test('load sees values changed on disk after reload, without restart',
+      () async {
+    // Step 31: the native widget writes straight to the prefs file
+    // (Kotlin), so the app's in-RAM SharedPreferences cache is stale
+    // until reload() — the same lesson as Thuoc Vui v1.2.13/v1.2.14.
+    final store = RdpConnectionStore();
+    await store.add(
+        name: 'PC', host: '10.0.0.5', port: 3389, trackpadMode: false);
+    var all = await store.load();
+    expect(all.firstWhere((c) => c.name == 'PC').trackpadMode, isFalse);
+    // Simulate the widget flipping trackpad on disk: write straight to
+    // the underlying store, bypassing the Dart-side cache — exactly what
+    // Kotlin does when it edits FlutterSharedPreferences. (Calling
+    // setMockInitialValues here would NOT simulate it: it nullifies the
+    // cached singleton, so the next getInstance() would see the new
+    // values at once, without any reload.)
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(RdpConnectionStore.listKey)!;
+    final decoded = (jsonDecode(raw) as List)
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+    decoded.firstWhere((m) => m['name'] == 'PC')['trackpad'] = true;
+    await SharedPreferencesStorePlatform.instance.setValue(
+        'String',
+        'flutter.${RdpConnectionStore.listKey}',
+        jsonEncode(decoded));
+    // The cached instance still sees the old value.
+    all = await store.load();
+    expect(all.firstWhere((c) => c.name == 'PC').trackpadMode, isFalse);
+    // After reload() the new value is visible — no restart needed.
+    await prefs.reload();
+    all = await store.load();
+    expect(all.firstWhere((c) => c.name == 'PC').trackpadMode, isTrue);
+  });
+
+  testWidgets('Home reloads its list when the app resumes after a widget tap',
+      (tester) async {
+    // Step 31: Home listens to the resume tick bumped by _AceAppState on
+    // resume; _reload() re-reads prefs from disk first, so a connection
+    // changed on the widget while the app was away shows up at once.
+    final resumeTick = ValueNotifier<int>(0);
+    addTearDown(resumeTick.dispose);
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: Home(
+            agent: agent,
+            pollMs: () => 1000,
+            settings: () => const SizedBox(),
+            resumeTick: resumeTick)));
+    await tester.pumpAndSettle();
+    expect(find.text('ace — Windows'), findsOneWidget);
+    expect(find.text('PC moi'), findsNothing);
+    // The widget adds a connection on disk while the app is away: write
+    // straight to the underlying store, bypassing the Dart-side cache —
+    // exactly what Kotlin does. (setMockInitialValues would NOT simulate
+    // it: it nullifies the cached singleton, so the next getInstance()
+    // would see the new values at once, with or without reload().)
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(RdpConnectionStore.listKey)!;
+    final decoded = (jsonDecode(raw) as List)
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+    decoded.add({
+      'id': 'pc-moi',
+      'name': 'PC moi',
+      'host': '10.0.0.9',
+      'port': 3390,
+      'trackpad': true,
+      'keyboard': true,
+      'favorite': false,
+    });
+    await SharedPreferencesStorePlatform.instance.setValue(
+        'String',
+        'flutter.${RdpConnectionStore.listKey}',
+        jsonEncode(decoded));
+    // Before the resume tick, Home still shows the old list.
+    await tester.pump();
+    expect(find.text('PC moi'), findsNothing);
+    // The app comes back: the tick fires, Home reloads from disk.
+    resumeTick.value++;
+    await tester.pumpAndSettle();
+    expect(find.text('PC moi'), findsOneWidget);
+    expect(find.text('10.0.0.9:3390'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('Home lists saved connections; tapping one connects with its saved credentials',

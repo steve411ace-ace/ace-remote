@@ -46,6 +46,11 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
   // A widget tap that arrives before load() finishes is queued here and
   // handled once the app is ready.
   Uri? _pendingWidgetUri;
+  // Step 31: bumped every time the app comes back from the background
+  // (after re-reading prefs from disk). Home listens to it and reloads
+  // its connection list, so a widget tap made while the app was away is
+  // visible the moment the user comes back.
+  final _resumeTick = ValueNotifier<int>(0);
   @override
   void initState() {
     super.initState();
@@ -116,7 +121,35 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       unawaited(
           SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
+      // Step 31: the native widget writes straight to the prefs file
+      // (Kotlin) while the app is away; re-read from disk, then tell
+      // Home to reload its list (see _refreshOnResume).
+      unawaited(_refreshOnResume());
     }
+  }
+
+  /// Step 31: re-reads SharedPreferences from disk and nudges Home to
+  /// reload. Without reload() the app keeps the old trackpad/keyboard
+  /// values after a widget tap, because Dart's SharedPreferences caches
+  /// in RAM (Thuoc Vui skill §3.1 — the same lesson as v1.2.13/v1.2.14).
+  Future<void> _refreshOnResume() async {
+    try {
+      final p = prefs ?? await SharedPreferences.getInstance();
+      await p.reload();
+    } catch (_) {}
+    _resumeTick.value++;
+  }
+
+  /// Step 31: loads the connections after re-reading SharedPreferences
+  /// from disk (same reason as _refreshOnResume). Use this instead of a
+  /// plain store.load() wherever the data may have changed outside the
+  /// app — i.e. after any widget tap.
+  Future<List<RdpConnection>> _loadConnectionsFresh() async {
+    try {
+      final p = prefs ?? await SharedPreferences.getInstance();
+      await p.reload();
+    } catch (_) {}
+    return RdpConnectionStore().load();
   }
 
   Future<void> save() async {
@@ -153,7 +186,7 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
         case HomeWidgetActionKind.openApp:
           return;
         case HomeWidgetActionKind.connect:
-          final connections = await store.load();
+          final connections = await _loadConnectionsFresh();
           RdpConnection? target;
           for (final c in connections) {
             if (c.id == action.connectionId) {
@@ -168,7 +201,7 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
           _openRemote(target);
         case HomeWidgetActionKind.toggleTrackpad:
         case HomeWidgetActionKind.toggleKeyboard:
-          final connections = await store.load();
+          final connections = await _loadConnectionsFresh();
           final current = await _widgetCurrentConnection(connections);
           if (current == null) return;
           final updated = action.kind == HomeWidgetActionKind.toggleTrackpad
@@ -181,7 +214,7 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
                   ? '${updated.trackpadMode ? 'Đã bật' : 'Đã tắt'} Trackpad cho ${updated.name}'
                   : '${updated.keyboardVisible ? 'Đã hiện' : 'Đã ẩn'} bàn phím cho ${updated.name}');
         case HomeWidgetActionKind.nextConnection:
-          final connections = await store.load();
+          final connections = await _loadConnectionsFresh();
           if (connections.length < 2) return;
           final current = await _widgetCurrentConnection(connections);
           final nextId = nextConnectionId(connections, current?.id);
@@ -271,6 +304,7 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
   void dispose() {
     unawaited(_widgetClickedSub?.cancel());
     openConnectionId.dispose();
+    _resumeTick.dispose();
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     WidgetsBinding.instance.removeObserver(this);
     agent.dispose();
@@ -314,6 +348,7 @@ class _AceAppState extends State<AceApp> with WidgetsBindingObserver {
                     pollMs: () => pollMs,
                     settings: _settingsPage,
                     openConnectionId: openConnectionId,
+                    resumeTick: _resumeTick,
                   ),
       );
 }
@@ -324,7 +359,8 @@ class Home extends StatefulWidget {
       required this.agent,
       required this.pollMs,
       required this.settings,
-      this.openConnectionId});
+      this.openConnectionId,
+      this.resumeTick});
   final Agent agent;
   final int Function() pollMs;
   final Widget Function() settings;
@@ -332,6 +368,11 @@ class Home extends StatefulWidget {
   // "connect" tap for the same connection is a no-op (see _AceAppState).
   // Optional so existing tests keep constructing Home without it.
   final ValueNotifier<String?>? openConnectionId;
+  // Step 31: bumped by _AceAppState every time the app comes back from
+  // the background (after re-reading prefs from disk). Home reloads its
+  // list on every bump, so widget taps made while the app was away show
+  // up immediately. Optional, like openConnectionId.
+  final ValueNotifier<int>? resumeTick;
   @override
   State<Home> createState() => _HomeState();
 }
@@ -354,10 +395,32 @@ class _HomeState extends State<Home> {
   void initState() {
     super.initState();
     _reload();
+    // Step 31: reload the list when the app comes back from the
+    // background — the widget may have changed the connections while
+    // the app was away (native Kotlin writes straight to the prefs
+    // file), and _reload() re-reads from disk first (see below).
+    widget.resumeTick?.addListener(_onResumeTick);
+  }
+
+  void _onResumeTick() {
+    unawaited(_reload());
+  }
+
+  @override
+  void dispose() {
+    widget.resumeTick?.removeListener(_onResumeTick);
+    super.dispose();
   }
 
   Future<void> _reload() async {
     try {
+      // Step 31: re-read SharedPreferences from disk BEFORE loading —
+      // the native widget writes the prefs file directly, so the
+      // in-RAM cache is stale after a widget tap (Thuoc Vui skill
+      // §3.1). Without this, Home (and the Edit page opened from it)
+      // keeps showing the old trackpad/keyboard values until restart.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
       final connections = await _store.load();
       if (mounted) {
         setState(() {
