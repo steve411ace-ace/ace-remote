@@ -6,6 +6,13 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.13+30] - 2026-11-14
+
+- Ẩn con trỏ hệ thống Android trên màn hình remote: cắm chuột rời vào
+  không còn 2 con trỏ chồng nhau (mũi tên Android + con trỏ PC), chỉ
+  còn con trỏ PC. Vùng bàn phím vẫn giữ mũi tên Android vì ở đó
+  không có con trỏ PC.
+
 ## [1.5.12+29] - 2026-11-14
 
 - Miếng trackpad thu hẹp thêm 5% (40% → 35% chiều rộng dải, tỉ lệ

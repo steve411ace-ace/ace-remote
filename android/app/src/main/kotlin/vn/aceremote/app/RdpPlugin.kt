@@ -14,6 +14,7 @@ import android.util.Log
 import android.os.Looper
 import android.view.InputDevice
 import android.view.MotionEvent
+import android.view.PointerIcon
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -434,6 +435,14 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
     }
 
     init {
+        // Step 45 (An): hide the Android system cursor over the remote
+        // screen. With a Bluetooth mouse connected, Android draws its own
+        // arrow on top of the PC cursor (double cursor). The system
+        // pointer only appears when a pointing device is present, so
+        // TYPE_NULL changes nothing for touch use — and the keyboard area
+        // keeps its arrow, since no PC cursor is drawn there.
+        surface.pointerIcon =
+            PointerIcon.getSystemIcon(context, PointerIcon.TYPE_NULL)
         surface.setOnTouchListener { _, event -> onTouch(event) }
         surface.holder.addCallback(this)
         channel.setMethodCallHandler { call, result ->
