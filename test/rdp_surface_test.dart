@@ -1291,10 +1291,21 @@ void main() {
         .ancestor(of: find.text(label), matching: find.byType(Container))
         .first);
     // Unfolded + on: the area shows below the keys, and the key rows
-    // shrink (row 56.6 -> 42.4, so an 'A' key is 38.4 tall, not 52.6).
+    // shrink (row 56.6 -> 41.5 with the step 38 palm-rest gap, so an 'A'
+    // key is 37.5 tall, not 52.6). The area stays full width, exactly as
+    // wide as the keyboard rows.
     await pumpWith(const Size(800, 800), true);
     expect(find.byKey(const ValueKey('trackpad-area')), findsOneWidget);
-    expect(keySize('A').height, closeTo(38.4, 1.5));
+    expect(keySize('A').height, closeTo(37.5, 1.5));
+    expect(tester.getSize(find.byKey(const ValueKey('trackpad-area'))).width,
+        closeTo(792.0, 1.0));
+    // Step 38: rounded like a laptop trackpad, and blank (no icon).
+    final areaBox = tester.widget<Container>(find.descendant(
+        of: find.byKey(const ValueKey('trackpad-area')),
+        matching: find.byType(Container)));
+    expect((areaBox.decoration as BoxDecoration?)?.borderRadius,
+        BorderRadius.circular(16));
+    expect(find.byIcon(Icons.touch_app_outlined), findsNothing);
     // Unfolded + off: no area, full-height keys.
     await pumpWith(const Size(800, 800), false);
     expect(find.byKey(const ValueKey('trackpad-area')), findsNothing);

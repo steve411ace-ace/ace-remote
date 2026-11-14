@@ -1670,12 +1670,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         // shrink to make room. The area is 1.5 normal rows tall; the six
         // key rows share the rest. In agent mode and when folded the area
         // never shows, so keyRowHeight == rowHeight there.
+        // Step 38: a 6px palm-rest gap separates the area from the keys,
+        // like a laptop; the keys give up 1px each for it.
         final showTrackpadArea = widget.rdpMode &&
             (widget.rdpConnection?.trackpadArea ?? false) &&
             !narrow;
         final trackpadHeight = showTrackpadArea ? rowHeight * 1.5 : 0.0;
+        final trackpadGap = showTrackpadArea ? 6.0 : 0.0;
         final keyRowHeight = showTrackpadArea
-            ? (box.maxHeight - 8 - trackpadHeight) / 6
+            ? (box.maxHeight - 8 - trackpadHeight - trackpadGap) / 6
             : rowHeight;
         kbLabelSize = (keyRowHeight * 0.30).clamp(12.0, 16.0);
         // Step 36: the click keys are manual now (An: "Thay hẳn, chỉnh
@@ -1790,6 +1793,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               // (GestureDetector: no key lives here, so a tap has nothing
               // to type). It works whether or not 'Chế độ Trackpad' is
               // on — that switch only controls swiping on the keys.
+              // Step 38: rounded like a laptop trackpad (radius 16) and
+              // blank — a real trackpad has no icon. It stays full width,
+              // exactly as wide as the keyboard rows (An).
+              if (showTrackpadArea) SizedBox(height: trackpadGap),
               if (showTrackpadArea)
                 SizedBox(
                     key: const ValueKey('trackpad-area'),
@@ -1801,12 +1808,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                         child: Container(
                             decoration: BoxDecoration(
                                 color: const Color(0xff1e1f23),
-                                borderRadius: BorderRadius.circular(12),
+                                borderRadius: BorderRadius.circular(16),
                                 border:
-                                    Border.all(color: Colors.white10)),
-                            child: const Center(
-                                child: Icon(Icons.touch_app_outlined,
-                                    color: Colors.white24, size: 20))))),
+                                    Border.all(color: Colors.white12)),
+                            child: const SizedBox.expand()))),
             ]))));
   });
 
