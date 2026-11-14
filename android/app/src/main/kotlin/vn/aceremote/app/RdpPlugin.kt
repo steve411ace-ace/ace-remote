@@ -1,5 +1,7 @@
 package vn.aceremote.app
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -128,10 +130,56 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
     private var trackpadCursorY = 0f
     private var trackpadLastX = 0f
     private var trackpadLastY = 0f
+    // Step 47 (An): clipboard sync, text only. FreeRDP's /clipboard flag
+    // is already on — LibFreeRDP.setConnectionInfo adds it unconditionally
+    // — so the native cliprdr channel is up; this app only had empty
+    // stubs for the callbacks. PC -> phone: OnRemoteClipboardChanged
+    // writes the Android clipboard. Phone -> PC: this listener sends the
+    // local text to the PC. lastRemoteText stops our own echo from
+    // bouncing back to the PC (the server only notifies on change, so a
+    // single guarded bounce is the worst case anyway).
+    private val clipboardManager =
+        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    private var lastRemoteText: String? = null
+    private val clipboardListener =
+        ClipboardManager.OnPrimaryClipChangedListener {
+            val text = localClipboardText()
+                ?: return@OnPrimaryClipChangedListener
+            synchronized(lock) {
+                if (disposed || state != "connected") return@OnPrimaryClipChangedListener
+                if (text == lastRemoteText) return@OnPrimaryClipChangedListener
+                val h = attempt?.handle ?: 0L
+                if (h == 0L) return@OnPrimaryClipChangedListener
+                LibFreeRDP.sendClipboardData(h, text)
+                Log.d("AceRdp", "clipboard: phone -> PC (${text.length} chars)")
+            }
+        }
+    private fun localClipboardText(): String? {
+        val clip = clipboardManager.primaryClip ?: return null
+        if (clip.itemCount == 0) return null
+        return clip.getItemAt(0).text?.toString()?.takeIf { it.isNotEmpty() }
+    }
+    // Push the phone's current clipboard to the PC once, on connect
+    // (same as aFreeRDP's getPrimaryClipManually): whatever was copied
+    // before connecting is already there to paste.
+    private fun pushLocalClipboard() {
+        val text = localClipboardText() ?: return
+        synchronized(lock) {
+            if (disposed || state != "connected") return
+            if (text == lastRemoteText) return
+            val h = attempt?.handle ?: 0L
+            if (h == 0L) return
+            LibFreeRDP.sendClipboardData(h, text)
+            Log.d("AceRdp", "clipboard: phone -> PC on connect (${text.length} chars)")
+        }
+    }
     private var trackpadMoved = false
     // Cursor moves 1.5x the finger delta (in framebuffer pixels): fast
     // enough to cross the screen with a short drag, slow enough to aim.
-    private val TRACKPAD_SENSITIVITY = 1.5f
+    // Step 48: relative-move multiplier, per connection (0.5–3.0, default
+    // 1.5 — the value step 19 hard-coded here). Set from the Dart 'mode'
+    // channel call together with the trackpad flag.
+    private var trackpadSensitivity = 1.5f
     private class PendingMove(val owner: Attempt, var x: Int, var y: Int)
     private var lastMovePending: PendingMove? = null
     private var touchOwner: Attempt? = null
@@ -199,9 +247,9 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         if (bitmap == null || !surfaceReady) return
         val scale = minOf(widthPx.toFloat() / bitmapWidth, heightPx.toFloat() / bitmapHeight)
         if (scale <= 0f) return
-        trackpadCursorX = (trackpadCursorX + dxSurfacePx / scale * TRACKPAD_SENSITIVITY)
+        trackpadCursorX = (trackpadCursorX + dxSurfacePx / scale * trackpadSensitivity)
             .coerceIn(0f, (bitmapWidth - 1).toFloat())
-        trackpadCursorY = (trackpadCursorY + dySurfacePx / scale * TRACKPAD_SENSITIVITY)
+        trackpadCursorY = (trackpadCursorY + dySurfacePx / scale * trackpadSensitivity)
             .coerceIn(0f, (bitmapHeight - 1).toFloat())
         lastX = trackpadCursorX.toInt(); lastY = trackpadCursorY.toInt()
         cursorInput(a, lastX, lastY, PTRFLAGS_MOVE)
@@ -443,6 +491,7 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         // keeps its arrow, since no PC cursor is drawn there.
         surface.pointerIcon =
             PointerIcon.getSystemIcon(context, PointerIcon.TYPE_NULL)
+        clipboardManager.addPrimaryClipChangedListener(clipboardListener)
         surface.setOnTouchListener { _, event -> onTouch(event) }
         surface.holder.addCallback(this)
         channel.setMethodCallHandler { call, result ->
@@ -501,6 +550,9 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                 }
                 "mode" -> {
                     val trackpad = call.argument<Boolean>("trackpad") ?: false
+                    val sensitivity =
+                        (call.argument<Number>("sensitivity")?.toFloat() ?: 1.5f)
+                            .coerceIn(0.5f, 3.0f)
                     synchronized(lock) {
                         if (trackpadMode != trackpad) {
                             trackpadMode = trackpad
@@ -509,6 +561,10 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                             trackpadCursorY = lastY.toFloat()
                             Log.d("AceRdp", "trackpad mode=" +
                                 if (trackpad) "relative" else "absolute")
+                        }
+                        if (trackpadSensitivity != sensitivity) {
+                            trackpadSensitivity = sensitivity
+                            Log.d("AceRdp", "trackpad sensitivity=$sensitivity")
                         }
                     }
                     result.success(null)
@@ -702,6 +758,7 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         synchronized(lock) { if (disposed) return; disposed = true; surfaceReady = false }
         channel.setMethodCallHandler(null)
         surface.setOnTouchListener(null)
+        clipboardManager.removePrimaryClipChangedListener(clipboardListener)
         main.removeCallbacks(longPress)
         surface.holder.removeCallback(this)
         stop()
@@ -822,7 +879,7 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
             if (disposed || stopping) executor.execute { synchronized(lock) {
                 if (!terminal && attempt === this) LibFreeRDP.disconnect(instance)
             } }
-            else { change("connected"); scheduleResize() }
+            else { change("connected"); scheduleResize(); pushLocalClipboard() }
         }
         override fun OnConnectionFailure(instance: Long) = synchronized(lock) {
             if (instance == handle && attempt === this) finish("failed", if (authAttempted)
@@ -872,7 +929,20 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
             if (valid()) bitmap?.let { if (LibFreeRDP.updateGraphics(handle, it, x, y, width, height)) draw() }
             Unit
         }
-        override fun OnRemoteClipboardChanged(data: String) {}
+        override fun OnRemoteClipboardChanged(data: String) {
+            // Text only (images stay ignored). Post to main: clipboard
+            // writes belong on the UI thread, and the echo guard must be
+            // set before the write so our own listener skips the bounce.
+            main.post {
+                synchronized(lock) {
+                    if (disposed) return@synchronized
+                    lastRemoteText = data
+                    clipboardManager.setPrimaryClip(
+                        ClipData.newPlainText("rdp-clipboard", data))
+                    Log.d("AceRdp", "clipboard: PC -> phone (${data.length} chars)")
+                }
+            }
+        }
         override fun OnRemoteClipboardImageChanged(data: ByteArray) {}
         override fun OnPointerSet(pixels: IntArray, width: Int, height: Int, hotX: Int, hotY: Int) = synchronized(lock) {
             // The remote cursor shape: stored and drawn by render() as an

@@ -26,6 +26,17 @@ class RdpController extends ValueNotifier<Map<String, dynamic>> {
     await _sendMode();
   }
 
+  /// Step 48: relative-move multiplier (0.5–3.0, default 1.5). Sent to
+  /// native together with the mode; attach() re-sends the current value.
+  double trackpadSensitivity = 1.5;
+
+  Future<void> setTrackpadSensitivity(double value) async {
+    final double clamped = value.clamp(0.5, 3.0);
+    if (trackpadSensitivity == clamped) return;
+    trackpadSensitivity = clamped;
+    await _sendMode();
+  }
+
   void setKeyboardVisible(bool value) {
     keyboardVisible.value = value;
   }
@@ -34,8 +45,10 @@ class RdpController extends ValueNotifier<Map<String, dynamic>> {
     final channel = _channel;
     if (channel == null) return;
     try {
-      await channel.invokeMethod<void>(
-          'mode', {'trackpad': trackpadMode.value});
+      await channel.invokeMethod<void>('mode', {
+        'trackpad': trackpadMode.value,
+        'sensitivity': trackpadSensitivity,
+      });
     } on PlatformException {
       // Native side not ready; the mode is kept in Dart and re-sent on attach.
     }
@@ -238,6 +251,8 @@ class _RdpConnectionPaneState extends State<RdpConnectionPane>
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         unawaited(controller.setTrackpadMode(connection.trackpadMode));
+        unawaited(
+            controller.setTrackpadSensitivity(connection.trackpadSensitivity));
         controller.setKeyboardVisible(connection.keyboardVisible);
       });
       unawaited(_loadConnectionCredentials());

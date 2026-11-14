@@ -190,6 +190,31 @@ void main() {
     expect(RdpConnection.fromJson(raw).trackpadArea, isFalse);
   });
 
+  test('step 48: trackpadSensitivity round-trips; old records default to 1.5',
+      () async {
+    final store = RdpConnectionStore();
+    final fast = await store.add(
+        name: 'PC nhanh',
+        host: '10.0.0.9',
+        port: 3389,
+        trackpadSensitivity: 2.5);
+    final all = await store.load();
+    expect(all.firstWhere((c) => c.id == fast.id).trackpadSensitivity, 2.5);
+    // A record written before step 48 (no key) falls back to 1.5.
+    final raw = <String, dynamic>{
+      'id': 'old',
+      'name': 'old',
+      'host': '10.0.0.1',
+      'port': 3389,
+    };
+    expect(RdpConnection.fromJson(raw).trackpadSensitivity, 1.5);
+    final roundTripped = RdpConnection.fromJson(RdpConnectionStore
+        .defaultConnection
+        .copyWith(trackpadSensitivity: 0.75)
+        .toJson());
+    expect(roundTripped.trackpadSensitivity, 0.75);
+  });
+
   test('load sees values changed on disk after reload, without restart',
       () async {
     // Step 31: the native widget writes straight to the prefs file
@@ -438,6 +463,51 @@ void main() {
         isTrue);
     expect(all.singleWhere((c) => c.name == 'ace — Windows').clickKeys,
         ClickKeys.hideBoth);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('step 48: trackpad sensitivity slider saves per connection',
+      (tester) async {
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: Home(
+            agent: agent,
+            pollMs: () => 1000,
+            settings: () => const SizedBox())));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('ace — Windows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    // Default 1.50x shown next to the slider. The slider sits below the
+    // ListView's cache extent, so scroll the list until its title is built
+    // (the key alone finds nothing until the item exists).
+    for (var i = 0;
+        i < 10 && find.text('Độ nhạy trackpad').evaluate().isEmpty;
+        i++) {
+      await tester.drag(
+          find.byKey(const ValueKey('connection-editor-list')),
+          const Offset(0, -300));
+      await tester.pump();
+    }
+    await tester.ensureVisible(find.text('Độ nhạy trackpad'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+        find.byKey(const ValueKey('trackpad-sensitivity')));
+    await tester.pumpAndSettle();
+    expect(find.text('1.50×'), findsOneWidget);
+    // Drag the slider all the way right: sensitivity goes to the 3.0x max.
+    await tester.drag(
+        find.byKey(const ValueKey('trackpad-sensitivity')),
+        const Offset(500, 0));
+    await tester.pump();
+    expect(find.text('3.00×'), findsWidgets);
+    await _saveFromEditor(tester);
+    final store = RdpConnectionStore();
+    final all = await store.load();
+    expect(all.singleWhere((c) => c.name == 'ace — Windows').trackpadSensitivity,
+        3.0);
     await tester.pumpWidget(const SizedBox());
   });
 

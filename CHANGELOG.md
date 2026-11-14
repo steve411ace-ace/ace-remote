@@ -6,6 +6,20 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.16+33] - 2026-11-14
+
+- Thanh trượt "Độ nhạy trackpad" trong màn hình sửa kết nối (0.5×–
+  3.0×, mặc định 1.5×): chỉnh con trỏ di nhanh hay chậm theo tay
+  kéo — áp dụng cho cả kéo trên màn hình remote, lướt trên bàn
+  phím và vùng trackpad. Mỗi kết nối nhớ một mức riêng.
+
+## [1.5.15+32] - 2026-11-14
+
+- Đồng bộ clipboard (chữ): copy trên PC thì paste được trên điện
+  thoại và ngược lại. Lúc nối vào, nội dung clipboard trên điện
+  thoại cũng được đẩy sang PC một lần. Chỉ đồng bộ chữ, chưa đồng
+  bộ ảnh.
+
 ## [1.5.14+31] - 2026-11-14
 
 - Giữ phím để lặp như bàn phím thật: giữ Backspace xóa liên tục, giữ

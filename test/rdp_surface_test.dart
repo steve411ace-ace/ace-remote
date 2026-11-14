@@ -452,7 +452,7 @@ void main() {
     expect(find.byKey(const ValueKey('rdp-trackpad')), findsNothing);
     expect(calls.map((c) => c.method), contains('mode'));
     expect(calls.lastWhere((c) => c.method == 'mode').arguments,
-        {'trackpad': true});
+        {'trackpad': true, 'sensitivity': 1.5});
     // Drag across the keyboard moves the cursor relatively, no key fires.
     calls.clear();
     await messenger.handlePlatformMessage(
@@ -1498,6 +1498,39 @@ void main() {
         calls.where((c) => c.method == 'key' && c.arguments['vk'] == 0x10),
         isEmpty);
     await shiftHold.up();
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('step 48: mode call carries the trackpad sensitivity',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/42');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final controller = RdpController();
+    await controller.attach(42);
+    // attach() re-sends the mode: default sensitivity 1.5.
+    expect(calls.where((c) => c.method == 'mode').single.arguments,
+        {'trackpad': false, 'sensitivity': 1.5});
+    calls.clear();
+    await controller.setTrackpadSensitivity(2.5);
+    expect(calls.where((c) => c.method == 'mode').single.arguments,
+        {'trackpad': false, 'sensitivity': 2.5});
+    // Same value again: nothing re-sent.
+    calls.clear();
+    await controller.setTrackpadSensitivity(2.5);
+    expect(calls, isEmpty);
+    // Out-of-range values clamp to 0.5–3.0.
+    await controller.setTrackpadSensitivity(9.0);
+    expect(
+        calls.where((c) => c.method == 'mode').single.arguments['sensitivity'],
+        3.0);
     await tester.pumpWidget(const SizedBox());
   });
 

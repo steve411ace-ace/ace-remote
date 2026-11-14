@@ -463,6 +463,8 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
             val clickKeys: String,
             // Step 37: same for the trackpad-area setting.
             val trackpadArea: Boolean,
+            // Step 48: same for the trackpad-sensitivity setting.
+            val trackpadSensitivity: Double,
         )
 
         /** Display order: favorites first, insertion order otherwise. */
@@ -496,6 +498,7 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
                             favorite = o.optBoolean("favorite", false),
                             clickKeys = o.optString("clickKeys", "showBoth"),
                             trackpadArea = o.optBoolean("trackpadArea", false),
+                            trackpadSensitivity = o.optDouble("trackpadSensitivity", 1.5),
                         )
                     )
                 }
@@ -520,6 +523,7 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
                 o.put("favorite", c.favorite)
                 o.put("clickKeys", c.clickKeys)
                 o.put("trackpadArea", c.trackpadArea)
+                o.put("trackpadSensitivity", c.trackpadSensitivity)
                 arr.put(o)
             }
             prefs.edit().putString(KEY_CONNECTIONS, arr.toString()).apply()

@@ -680,6 +680,8 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
   late bool trackpadMode = widget.existing?.trackpadMode ?? false;
   late bool keyboardVisible = widget.existing?.keyboardVisible ?? true;
   late bool trackpadArea = widget.existing?.trackpadArea ?? false;
+  late double trackpadSensitivity =
+      widget.existing?.trackpadSensitivity ?? 1.5;
   late ClickKeys clickKeys =
       widget.existing?.clickKeys ?? ClickKeys.showBoth;
   String? error;
@@ -730,7 +732,8 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
           trackpadMode: trackpadMode,
           keyboardVisible: keyboardVisible,
           clickKeys: clickKeys,
-          trackpadArea: trackpadArea);
+          trackpadArea: trackpadArea,
+          trackpadSensitivity: trackpadSensitivity);
     } else {
       await widget.store.update(
           existing.copyWith(
@@ -741,7 +744,8 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
               trackpadMode: trackpadMode,
               keyboardVisible: keyboardVisible,
               clickKeys: clickKeys,
-              trackpadArea: trackpadArea),
+              trackpadArea: trackpadArea,
+              trackpadSensitivity: trackpadSensitivity),
           password: password.text);
     }
     if (mounted) Navigator.pop(context, true);
@@ -811,6 +815,28 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
                   // the Phím Left/Right section below.
                   if (v) clickKeys = ClickKeys.hideBoth;
                 })),
+        // Step 48: how far the cursor moves per finger drag — applies to
+        // every relative move: trackpad-mode drags on the remote screen,
+        // swipes across the keyboard, and the trackpad strip. 1.5x is the
+        // value step 19 hard-coded natively; 0.5x is slow and precise,
+        // 3.0x crosses the screen in one swipe.
+        ListTile(
+            title: const Text('Độ nhạy trackpad'),
+            subtitle: Text(
+                'Con trỏ di chuyển ${trackpadSensitivity.toStringAsFixed(2)}× '
+                'quãng kéo tay. Chậm = chính xác, nhanh = lướt hết màn hình.'),
+            trailing: Text(
+                '${trackpadSensitivity.toStringAsFixed(2)}×',
+                style: const TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.bold))),
+        Slider(
+            key: const ValueKey('trackpad-sensitivity'),
+            value: trackpadSensitivity,
+            min: 0.5,
+            max: 3.0,
+            divisions: 10,
+            label: '${trackpadSensitivity.toStringAsFixed(2)}×',
+            onChanged: (v) => setState(() => trackpadSensitivity = v)),
         // Step 36: which click keys flank Space, manual only (An: "Thay
         // hẳn, chỉnh tay thôi"). A connected mouse no longer hides them.
         const SizedBox(height: 8),
