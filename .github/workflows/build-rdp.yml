@@ -18,6 +18,18 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Step 28: fetch-depth 2 — the version check compares pubspec.yaml
+          # against the previous commit, and the release-notes fallback
+          # uses the current commit message.
+          fetch-depth: 2
+      # Step 28: every build must ship a NEW version (Thuoc Vui bumps
+      # pubspec.yaml by hand on every release). The build FAILS when the
+      # version is unchanged from the previous commit, so 1.4.0 (5) can
+      # never repeat for 11 runs again.
+      - name: Check version was bumped
+        shell: bash
+        run: python3 scripts/check_version.py
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -106,6 +118,10 @@ jobs:
           grep -F 'gradle-9.5.0-all.zip' android/gradle/wrapper/gradle-wrapper.properties
       # App: AGP 9.3.1, Gradle 9.5.0, KGP 2.4.20, minSdk 29.
       # Raw AAR runtime dependencies are explicitly mirrored in app/build.gradle.
+      # Signing (bước 30, theo cách Thuốc Vui): khóa debug cố định được commit
+      # trong repo dạng base64 (android/app/debug.keystore.base64); build.gradle
+      # tự giải mã thành debug.keystore lúc build nên mọi bản cùng 1 chữ ký,
+      # cài đè được. Không cần GitHub Secrets nào cho việc ký.
       - name: Build waiting-surface APK (arm64 only)
         run: flutter build apk --release --target-platform android-arm64 --dart-define=ACE_RDP=true
       - uses: actions/upload-artifact@v4
@@ -113,6 +129,16 @@ jobs:
           name: ace-remote-rdp-arm64
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+      # Step 28: release notes come from the newest CHANGELOG.md entry
+      # (fallback: the push commit message). Written to release-notes.txt
+      # and passed to Firebase below.
+      - name: Generate release notes from CHANGELOG
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/release_notes.py CHANGELOG.md release-notes.txt
+          echo '--- release notes ---'
+          cat release-notes.txt
       - name: Upload to Firebase App Distribution
         uses: wzieba/firebase-distribution-github-action@v1
         with:
@@ -120,4 +146,6 @@ jobs:
           serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           file: build/app/outputs/flutter-apk/app-release.apk
           testers: steve411ace@gmail.com
-          releaseNotes: "Ace Remote RDP prototype — nối RDP thật (branch rdp-prototype). Bản RDP-only, KHÔNG phải v1.4 agent-mode."
+          # Step 28: detailed notes from CHANGELOG.md (see the step above),
+          # not the old one-line generic text.
+          releaseNotesFile: release-notes.txt

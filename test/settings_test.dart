@@ -1,5 +1,6 @@
 import 'package:ace_remote/main.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -112,6 +113,26 @@ void main() {
     expect(applied.length, 1);
     expect(applied.first, lessThan(100));
     expect(applied.first, greaterThanOrEqualTo(0));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Settings shows the installed version (step 28)',
+      (tester) async {
+    PackageInfo.setMockInitialValues(
+      appName: 'Ace Remote',
+      packageName: 'vn.aceremote.app',
+      version: '1.5.0',
+      buildNumber: '16',
+      buildSignature: '',
+    );
+    await tester.pumpWidget(MaterialApp(
+        home: SettingsPage(
+            theme: ThemeMode.system,
+            onThemeChanged: (_) async {},
+            widgetOpacity: 100,
+            onWidgetOpacityChanged: (_) async {})));
+    await tester.pumpAndSettle();
+    expect(find.text('Phiên bản 1.5.0 (16)'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 }

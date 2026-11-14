@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:home_widget/home_widget.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'agent.dart';
@@ -762,11 +763,27 @@ class _SettingsPageState extends State<SettingsPage> {
   // widget is not re-synced on every tick of the drag).
   late int opacity = clampWidgetOpacity(widget.widgetOpacity);
   bool _pinSupported = false;
+  // Step 28: installed version, e.g. "1.5.0 (16)" (Thuoc Vui shows its
+  // version in Settings too). Null until loaded, or when the plugin is
+  // unavailable (e.g. in tests without mock values).
+  String? _appVersion;
 
   @override
   void initState() {
     super.initState();
     _checkPinSupport();
+    _loadVersion();
+  }
+
+  /// Step 28: read the real version from the APK (pubspec.yaml version).
+  /// Silently hidden when unavailable.
+  Future<void> _loadVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() => _appVersion = '${info.version} (${info.buildNumber})');
+      }
+    } catch (_) {}
   }
 
   /// Step 27: Android 8+ lets the app ask the launcher to pin the widget
@@ -891,6 +908,17 @@ class _SettingsPageState extends State<SettingsPage> {
                   .textTheme
                   .bodySmall
                   ?.copyWith(color: scheme.onSurfaceVariant)),
+          // Step 28: installed version, so An can check the right build
+          // is installed (e.g. after an update from App Tester).
+          if (_appVersion != null) ...[
+            const SizedBox(height: 16),
+            Text('Phiên bản $_appVersion',
+                textAlign: TextAlign.center,
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: scheme.onSurfaceVariant)),
+          ],
         ]));
   }
 }

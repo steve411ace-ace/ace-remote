@@ -5,6 +5,23 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
+// Khóa ký CỐ ĐỊNH cho mọi bản build (bước 30, theo cách Thuốc Vui đã làm từ
+// v1.2.0): trước đây mỗi máy build cloud tự tạo 1 debug.keystore ngẫu nhiên
+// nên chữ ký khác nhau, Android không cho cài đè. Nay khóa được lưu dưới dạng
+// base64 (file debug.keystore.base64, dạng text nên đẩy qua GitHub được, còn
+// file keystore nhị phân thì không) và giải mã lại thành debug.keystore ngay
+// lúc build, nên mọi bản sau này đều cùng 1 chữ ký, cài đè được luôn.
+// Đây là khóa DEBUG (mật khẩu chuẩn của Android debug key), không phải khóa
+// phát hành Play Store. App chỉ phát qua Firebase App Distribution cho tester,
+// không phát hành Play Store — giống hệt Thuốc Vui.
+// Không cần GitHub Secrets nào cho việc ký. Bản sao lưu keystore gốc nằm trên
+// PC của An (xem docs/rdp-step30-fixed-key-thuoc-vui.md).
+def fixedDebugKeystore = file("debug.keystore")
+def fixedDebugKeystoreBase64 = file("debug.keystore.base64")
+if (!fixedDebugKeystore.exists() && fixedDebugKeystoreBase64.exists()) {
+    fixedDebugKeystore.bytes = java.util.Base64.getDecoder().decode(fixedDebugKeystoreBase64.text.trim())
+}
+
 android {
     namespace = "vn.aceremote.app"
     compileSdk = 37
@@ -28,12 +45,22 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        debug {
+            storeFile = fixedDebugKeystore
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            // (Khôi phục 13/11/2026 — Codex đã xóa mất khối này; fixed signing key
-            //  vẫn còn nợ trước khi gọi đây là bản ổn định.)
+            // Signing with the fixed debug key, so `flutter run --release`
+            // works and every CI build has the same signature.
+            // First fixed-key build still needs one uninstall/reinstall
+            // (different signature from the per-runner debug builds);
+            // later builds update in place and keep app data.
             signingConfig = signingConfigs.debug
         }
     }

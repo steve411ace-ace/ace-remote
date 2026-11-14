@@ -1,0 +1,42 @@
+# Changelog — Ace Remote
+
+Quy tắc (theo cách Thuốc Vui: mỗi bản tăng cả versionName và build number
+trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
+`pubspec.yaml` và thêm một mục mới ở ĐẦU file này. CI lấy mục mới nhất làm
+release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
+và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
+
+## [1.5.0+16] - 2026-11-14
+
+- Phiên bản tăng lên 1.5.0 (16): sửa cách đánh phiên bản — mỗi bản build giờ
+  có số phiên bản mới, không còn 1.4.0 (5) mãi như 11 bản trước (runs #5–#15).
+- Release notes chi tiết: mỗi bản lên App Tester kèm danh sách thay đổi lấy
+  từ mục mới nhất của CHANGELOG này (trước đây chỉ có một dòng chung chung).
+- CI kiểm tra: build sẽ lỗi nếu quên tăng version trong `pubspec.yaml`
+  (so với commit trước) hoặc build number không tăng.
+- Cài đặt hiện số phiên bản của app đang cài (ví dụ "Phiên bản 1.5.0 (16)"),
+  để kiểm tra đúng bản đã cài hay chưa.
+- Widget màn hình chính: 3 nút Trackpad, Bàn phím, chuyển đổi giờ bấm là đổi
+  ngay trên widget, không mở app nữa (xử lý native trong Kotlin); bỏ nút
+  "Kết nối" (chạm vào tên máy là kết nối); làm đẹp lại toàn bộ widget theo
+  Material 3 (icon tile xanh ngọc, nút chuyển hình tròn với icon mũi tên đổi
+  chỗ, pill rõ trạng thái bật/tắt).
+- Cập nhật tại chỗ (theo cách Thuốc Vui): khóa ký debug cố định được commit
+  trong repo dạng base64 nên mọi bản build cùng 1 chữ ký — từ bản này về sau
+  bấm "Cập nhật" trên App Tester là được, không cần gỡ/cài, không mất kết nối
+  đã lưu. Lưu ý: bản này vẫn phải gỡ/cài 1 lần cuối vì đổi chữ ký so với các
+  bản trước (ký bằng debug key ngẫu nhiên của từng máy build).
+
+## [1.4.0+5] - 2026-11-13
+
+- Bản RDP-only (branch rdp-prototype, runs #5–#15, bước 19–27): làm lại
+  Ace Remote bằng RDP (FreeRDP 3.33.0) thay cho agent-mode cũ.
+- Kết nối RDP thật, lưu user/pass mã hóa, nhiều kết nối đã lưu (bấm là nối,
+  long-press: Kết nối/Yêu thích/Sửa/Xóa), tự nối lại khi mở lại từ đa nhiệm.
+- Bàn phím laptop 6 hàng: phím Left/Right chuột 2 bên Space, Shift đổi nhãn
+  phím (2 thành @), Caps Lock bật/tắt thật, mũi tên chữ T ngược, cột
+  PgUp/PgDn/Home/End, hàng F (Delete to, F1–F12 bằng phím số).
+- Trackpad lướt trên bàn phím, con trỏ chuột hiện rõ, ẩn/hiện bàn phím.
+- Cài đặt Sáng/Tối/Theo điện thoại; loading kết nối hiện đại.
+- Widget màn hình chính 4x2: sáng/tối theo app, chỉnh độ trong suốt 0–100%,
+  nút nhanh Trackpad/bàn phím, chuyển đổi giữa các kết nối, chạm để kết nối.

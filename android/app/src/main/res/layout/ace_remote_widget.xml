@@ -1,12 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Step 27: widget layout 4x2. Only RemoteViews-supported views are used
      (FrameLayout / LinearLayout / TextView / ImageView — no Compose, no
-     custom views). TextViews double as buttons: the provider attaches a
-     launch PendingIntent to each one (RemoteViews has no onClick).
-     The rounded background is NOT a shape drawable: RemoteViews cannot set
-     both a shape's color and its alpha, and setBackgroundColor would drop
-     the rounded corners. Instead the provider draws a rounded-rect bitmap
-     (solid color + alpha from the opacity setting) into widget_bg. -->
+     custom views). The rounded background is NOT a shape drawable:
+     RemoteViews cannot set both a shape's color and its alpha, and
+     setBackgroundColor would drop the rounded corners. Instead the provider
+     draws a rounded-rect bitmap (solid color + alpha from the opacity
+     setting) into widget_bg.
+     Step 29 (redesign, Material 3):
+     - Info row gains a teal icon tile with a real monitor vector icon; the
+       name is bigger (17sp bold) and the address/status smaller, so the
+       hierarchy is clear.
+     - The switch key is now a circular ImageView with a real swap vector
+       icon — the "⇄" text character is gone (some fonts render it as a
+       hollow box).
+     - Trackpad / Bàn phím are pill containers with an icon + a label, so
+       the provider can tint the icon and the label separately for the
+       ON (teal, white) / OFF (grey, muted) states.
+     - The "Kết nối" button is GONE: tapping the info area already opens
+       the app and connects. All three remaining buttons are handled
+       natively by the provider (broadcast intents) and never open the app.
+     Buttons are clickable containers: the provider attaches a
+     PendingIntent to each one (RemoteViews has no onClick). -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
@@ -23,7 +37,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:padding="10dp">
+        android:padding="12dp">
 
         <!-- Info row: tap = open the app and connect to this connection. -->
         <LinearLayout
@@ -34,10 +48,21 @@
             android:orientation="horizontal"
             android:gravity="center_vertical">
 
+            <!-- Teal icon tile (always teal, white monitor icon). -->
+            <ImageView
+                android:id="@+id/widget_icon_tile"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="@drawable/widget_icon_tile"
+                android:src="@drawable/ic_widget_monitor"
+                android:padding="8dp"
+                android:contentDescription="@null" />
+
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:layout_marginStart="10dp"
                 android:orientation="vertical">
 
                 <TextView
@@ -46,7 +71,7 @@
                     android:layout_height="wrap_content"
                     android:text="Ace Remote"
                     android:textColor="#FFFFFF"
-                    android:textSize="16sp"
+                    android:textSize="17sp"
                     android:textStyle="bold"
                     android:maxLines="1"
                     android:ellipsize="end" />
@@ -55,6 +80,7 @@
                     android:id="@+id/widget_address"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
                     android:text="100.101.127.41:3389"
                     android:textColor="#B0BEC5"
                     android:textSize="12sp"
@@ -65,6 +91,7 @@
                     android:id="@+id/widget_status"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
                     android:text="Đã lưu • Chạm"
                     android:textColor="#B0BEC5"
                     android:textSize="11sp"
@@ -73,59 +100,81 @@
             </LinearLayout>
 
             <!-- Switch connection: only visible when > 1 connection is saved. -->
-            <TextView
+            <ImageView
                 android:id="@+id/widget_next"
                 android:layout_width="40dp"
                 android:layout_height="40dp"
                 android:layout_marginStart="8dp"
-                android:gravity="center"
-                android:text="⇄"
-                android:textColor="#FFFFFF"
-                android:textSize="20sp"
-                android:background="@drawable/widget_pill_off_dark"
+                android:background="@drawable/widget_circle_off_light"
+                android:src="@drawable/ic_widget_swap"
+                android:padding="9dp"
+                android:contentDescription="Chuyển kết nối"
                 android:visibility="gone" />
         </LinearLayout>
 
-        <!-- Quick-action row: Trackpad / Bàn phím toggles + Kết nối. -->
+        <!-- Quick-action row: Trackpad / Bàn phím toggles (native, no app launch). -->
         <LinearLayout
+            android:id="@+id/widget_actions"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
             android:orientation="horizontal">
 
-            <TextView
+            <LinearLayout
                 android:id="@+id/widget_btn_trackpad"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
+                android:layout_height="44dp"
                 android:layout_weight="1"
                 android:layout_marginEnd="4dp"
                 android:gravity="center"
-                android:text="Trackpad"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp"
-                android:background="@drawable/widget_pill_off_dark" />
+                android:orientation="horizontal"
+                android:background="@drawable/widget_pill_off_light">
 
-            <TextView
+                <ImageView
+                    android:id="@+id/widget_btn_trackpad_icon"
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:src="@drawable/ic_widget_trackpad"
+                    android:contentDescription="@null" />
+
+                <TextView
+                    android:id="@+id/widget_btn_trackpad_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="Trackpad"
+                    android:textColor="#333333"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <LinearLayout
                 android:id="@+id/widget_btn_keyboard"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
+                android:layout_height="44dp"
                 android:layout_weight="1"
-                android:layout_marginEnd="4dp"
+                android:layout_marginStart="4dp"
                 android:gravity="center"
-                android:text="Bàn phím"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp"
-                android:background="@drawable/widget_pill_off_dark" />
+                android:orientation="horizontal"
+                android:background="@drawable/widget_pill_off_light">
 
-            <TextView
-                android:id="@+id/widget_btn_connect"
-                android:layout_width="0dp"
-                android:layout_height="40dp"
-                android:layout_weight="1"
-                android:gravity="center"
-                android:text="Kết nối"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp"
-                android:background="@drawable/widget_pill_on" />
+                <ImageView
+                    android:id="@+id/widget_btn_keyboard_icon"
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:src="@drawable/ic_widget_keyboard"
+                    android:contentDescription="@null" />
+
+                <TextView
+                    android:id="@+id/widget_btn_keyboard_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="Bàn phím"
+                    android:textColor="#333333"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Step 29: swap icon for the switch key (Material "swap_horiz", white
+     fill — the provider tints it with setColorFilter to match the theme).
+     Replaces the "⇄" text character, which some fonts render as a hollow
+     box. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M6.99,11L3,15l3.99,4v-3H14v-2H6.99zM21,9l-3.99,-4v3H10v2h7.01z" />
+</vector>

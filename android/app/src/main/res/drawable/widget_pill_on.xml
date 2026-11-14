@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Step 27: rounded pill for a widget toggle that is ON (accent teal, same
-     as the app's active key color 0xff2bb3a3). Used for the "Kết nối" key
-     and for Trackpad/Bàn phím when they are on. -->
+     as the app's active key color 0xff2bb3a3). Used for Trackpad / Bàn phím
+     when they are on. (Step 29: the "Kết nối" button that also used this
+     pill is gone — the info area is the way to connect now.) -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
     <solid android:color="#2BB3A3" />
