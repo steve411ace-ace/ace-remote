@@ -6,6 +6,13 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.7+24] - 2026-11-14
+
+- Vùng trackpad giờ là miếng xám bo tròn nằm giữa như ảnh anh gửi
+  (trackpad laptop nằm giữa phần kê tay): rộng 60% dải bàn phím, căn
+  giữa, màu xám rõ trên nền đen. Vùng cảm ứng vẫn full chiều ngang
+  như cũ, kéo/chạm ở đâu trên dải cũng di chuột/click được.
+
 ## [1.5.6+23] - 2026-11-14
 
 - Vùng trackpad bo tròn cho giống trackpad laptop (góc bo 16, không còn

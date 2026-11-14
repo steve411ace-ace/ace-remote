@@ -1794,8 +1794,13 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               // to type). It works whether or not 'Chế độ Trackpad' is
               // on — that switch only controls swiping on the keys.
               // Step 38: rounded like a laptop trackpad (radius 16) and
-              // blank — a real trackpad has no icon. It stays full width,
-              // exactly as wide as the keyboard rows (An).
+              // blank — a real trackpad has no icon.
+              // Step 39 (An, correcting step 38): the visible pad is the
+              // gray rounded rectangle IN THE MIDDLE, like the photo he
+              // sent — a laptop trackpad sitting in the middle of the
+              // palm rest, 60% of the strip width, clearly gray against
+              // the dark deck. The touch zone stays the whole strip, so
+              // the pad still works full width as he asked before.
               if (showTrackpadArea) SizedBox(height: trackpadGap),
               if (showTrackpadArea)
                 SizedBox(
@@ -1805,13 +1810,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                         behavior: HitTestBehavior.opaque,
                         onTap: () => unawaited(rdpController
                             .clickAtLastPosition('left')),
-                        child: Container(
-                            decoration: BoxDecoration(
-                                color: const Color(0xff1e1f23),
-                                borderRadius: BorderRadius.circular(16),
-                                border:
-                                    Border.all(color: Colors.white12)),
-                            child: const SizedBox.expand()))),
+                        child: LayoutBuilder(builder: (context, areaBox) {
+                          final padWidth = areaBox.maxWidth * 0.6;
+                          return Center(
+                              child: Container(
+                                  key: const ValueKey('trackpad-pad'),
+                                  width: padWidth,
+                                  height: trackpadHeight,
+                                  decoration: BoxDecoration(
+                                      color: const Color(0xff3a3b40),
+                                      borderRadius:
+                                          BorderRadius.circular(16),
+                                      border: Border.all(
+                                          color: Colors.white12))));
+                        }))),
             ]))));
   });
 

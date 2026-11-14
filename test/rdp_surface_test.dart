@@ -1300,11 +1300,20 @@ void main() {
     expect(tester.getSize(find.byKey(const ValueKey('trackpad-area'))).width,
         closeTo(792.0, 1.0));
     // Step 38: rounded like a laptop trackpad, and blank (no icon).
-    final areaBox = tester.widget<Container>(find.descendant(
-        of: find.byKey(const ValueKey('trackpad-area')),
-        matching: find.byType(Container)));
-    expect((areaBox.decoration as BoxDecoration?)?.borderRadius,
+    // Step 39: the visible pad is the gray rounded rectangle in the
+    // middle, like the photo An sent — 60% of the strip width, centered,
+    // clearly gray (#3a3b40) against the dark deck. The touch zone is
+    // still the whole strip (792 wide).
+    final padBox = tester.widget<Container>(
+        find.byKey(const ValueKey('trackpad-pad')));
+    expect((padBox.decoration as BoxDecoration?)?.borderRadius,
         BorderRadius.circular(16));
+    expect((padBox.decoration as BoxDecoration?)?.color,
+        const Color(0xff3a3b40));
+    expect(tester.getSize(find.byKey(const ValueKey('trackpad-pad'))).width,
+        closeTo(475.2, 2.0));
+    expect(tester.getTopLeft(find.byKey(const ValueKey('trackpad-pad'))).dx,
+        closeTo(162.4, 2.0));
     expect(find.byIcon(Icons.touch_app_outlined), findsNothing);
     // Unfolded + off: no area, full-height keys.
     await pumpWith(const Size(800, 800), false);
