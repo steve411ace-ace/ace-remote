@@ -17,6 +17,22 @@ import 'package:shared_preferences/shared_preferences.dart';
 // ignore: depend_on_referenced_packages
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 
+/// Scrolls the connection editor's list until the save button is built and
+/// taps it. The button sits below the ListView's cache extent on a tall
+/// page, so ensureVisible cannot find it before scrolling (and
+/// scrollUntilVisible cannot pick the list's Scrollable out of the
+/// TextFields' own Scrollables).
+Future<void> _saveFromEditor(WidgetTester tester) async {
+  for (var i = 0; i < 10 && find.text('Lưu').evaluate().isEmpty; i++) {
+    await tester.drag(find.byKey(const ValueKey('connection-editor-list')),
+        const Offset(0, -300));
+    await tester.pump();
+  }
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Lưu'));
+  await tester.pumpAndSettle();
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -129,6 +145,39 @@ void main() {
     expect(all.map((c) => c.id).toList(), [plain.id, starred.id, 'ace']);
     expect(all.firstWhere((c) => c.id == plain.id).trackpadMode, isFalse);
     expect(all.firstWhere((c) => c.id == plain.id).keyboardVisible, isTrue);
+  });
+
+  test('step 36: clickKeys round-trips; old records default to showBoth',
+      () async {
+    final store = RdpConnectionStore();
+    final hidden = await store.add(
+        name: 'PC an phim',
+        host: '10.0.0.7',
+        port: 3389,
+        clickKeys: ClickKeys.hideBoth);
+    var all = await store.load();
+    expect(
+        all.firstWhere((c) => c.id == hidden.id).clickKeys,
+        ClickKeys.hideBoth);
+    // A record written before step 36 (no 'clickKeys' key) and one with an
+    // unknown value both fall back to showBoth.
+    final raw = <String, dynamic>{
+      'id': 'old',
+      'name': 'old',
+      'host': '10.0.0.1',
+      'port': 3389,
+    };
+    expect(RdpConnection.fromJson(raw).clickKeys, ClickKeys.showBoth);
+    raw['clickKeys'] = 'nope';
+    expect(RdpConnection.fromJson(raw).clickKeys, ClickKeys.showBoth);
+    // toJson/fromJson keeps every level.
+    for (final level in ClickKeys.values) {
+      final roundTripped = RdpConnection.fromJson(
+          RdpConnectionStore.defaultConnection
+              .copyWith(clickKeys: level)
+              .toJson());
+      expect(roundTripped.clickKeys, level);
+    }
   });
 
   test('load sees values changed on disk after reload, without restart',
@@ -292,11 +341,15 @@ void main() {
         find.byKey(const ValueKey('connection-password')), 'pw-moi');
     // Turn on trackpad mode for the new connection.
     await tester.ensureVisible(find.text('Chế độ Trackpad'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Chế độ Trackpad'));
     await tester.pump();
-    await tester.ensureVisible(find.text('Lưu'));
-    await tester.tap(find.text('Lưu'));
+    // Pick the click-keys level for the new connection (step 36).
+    await tester.ensureVisible(find.text('Ẩn cả 2'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Ẩn cả 2'));
+    await tester.pump();
+    await _saveFromEditor(tester);
     expect(find.text('PC moi'), findsOneWidget);
     expect(find.text('10.0.0.9:3390'), findsOneWidget);
     expect(find.text('admin'), findsOneWidget);
@@ -310,6 +363,7 @@ void main() {
     expect(await store.passwordFor(added.id), 'pw-moi');
     expect(added.trackpadMode, isTrue);
     expect(added.keyboardVisible, isTrue);
+    expect(added.clickKeys, ClickKeys.hideBoth);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -334,11 +388,10 @@ void main() {
     await tester.enterText(
         find.byKey(const ValueKey('connection-name')), 'ace doi ten');
     await tester.ensureVisible(find.text('Chế độ Trackpad'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Chế độ Trackpad'));
     await tester.pump();
-    await tester.ensureVisible(find.text('Lưu'));
-    await tester.tap(find.text('Lưu'));
-    await tester.pumpAndSettle();
+    await _saveFromEditor(tester);
     expect(find.text('ace doi ten'), findsOneWidget);
     expect(find.text('ace — Windows'), findsNothing);
     final store = RdpConnectionStore();

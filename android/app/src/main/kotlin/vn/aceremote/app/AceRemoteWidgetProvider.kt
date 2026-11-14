@@ -456,6 +456,11 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
             val trackpad: Boolean,
             val keyboard: Boolean,
             val favorite: Boolean,
+            // Step 36: the click-keys setting ('showBoth'/'hideRight'/
+            // 'hideBoth'). The widget never changes it, but it must be
+            // carried through saveConnections — otherwise a widget toggle
+            // would rewrite the JSON and drop the setting.
+            val clickKeys: String,
         )
 
         /** Display order: favorites first, insertion order otherwise. */
@@ -487,6 +492,7 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
                             trackpad = o.optBoolean("trackpad", false),
                             keyboard = o.optBoolean("keyboard", true),
                             favorite = o.optBoolean("favorite", false),
+                            clickKeys = o.optString("clickKeys", "showBoth"),
                         )
                     )
                 }
@@ -509,6 +515,7 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
                 o.put("trackpad", c.trackpad)
                 o.put("keyboard", c.keyboard)
                 o.put("favorite", c.favorite)
+                o.put("clickKeys", c.clickKeys)
                 arr.put(o)
             }
             prefs.edit().putString(KEY_CONNECTIONS, arr.toString()).apply()

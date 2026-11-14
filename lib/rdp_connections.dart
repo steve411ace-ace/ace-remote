@@ -16,12 +16,22 @@ import 'rdp_credentials.dart';
 //   `rdp_username_<id>` and `rdp_password_<id>` per connection, so each
 //   connection keeps its own credentials and deleting it wipes them.
 
+/// Which on-screen click keys flank Space (step 36, manual config — An:
+/// "Thay hẳn, chỉnh tay thôi"). `showBoth` is the default (the pre-step-34
+/// behaviour). `hideRight` keeps Left — the one needed to click while
+/// swiping on the keyboard to move the mouse — and gives Space Right's
+/// width; `hideBoth` hides both and Space takes both widths. Stored as a
+/// string in the JSON record; old records without the key fall back to
+/// `showBoth`.
+enum ClickKeys { showBoth, hideRight, hideBoth }
+
 /// One saved connection. `username` is filled in by the store from secure
 /// storage; it is never part of [toJson]. The per-connection settings
 /// (step 23 redesign, 04:03) live in the JSON record: `trackpadMode`
 /// (false = touch, true = trackpad), `keyboardVisible` (false = the remote
-/// screen fills the whole page), and `favorite` (pinned to the top of the
-/// list). Older records without these keys get the defaults below.
+/// screen fills the whole page), `favorite` (pinned to the top of the
+/// list), and `clickKeys` (step 36). Older records without these keys get
+/// the defaults below.
 class RdpConnection {
   const RdpConnection({
     required this.id,
@@ -32,6 +42,7 @@ class RdpConnection {
     this.trackpadMode = false,
     this.keyboardVisible = true,
     this.favorite = false,
+    this.clickKeys = ClickKeys.showBoth,
   });
 
   final String id;
@@ -42,6 +53,7 @@ class RdpConnection {
   final bool trackpadMode;
   final bool keyboardVisible;
   final bool favorite;
+  final ClickKeys clickKeys;
 
   String get address => '$host:$port';
 
@@ -53,6 +65,7 @@ class RdpConnection {
     bool? trackpadMode,
     bool? keyboardVisible,
     bool? favorite,
+    ClickKeys? clickKeys,
   }) =>
       RdpConnection(
         id: id,
@@ -63,6 +76,7 @@ class RdpConnection {
         trackpadMode: trackpadMode ?? this.trackpadMode,
         keyboardVisible: keyboardVisible ?? this.keyboardVisible,
         favorite: favorite ?? this.favorite,
+        clickKeys: clickKeys ?? this.clickKeys,
       );
 
   Map<String, dynamic> toJson() => {
@@ -73,6 +87,7 @@ class RdpConnection {
         'trackpad': trackpadMode,
         'keyboard': keyboardVisible,
         'favorite': favorite,
+        'clickKeys': clickKeys.name,
       };
 
   factory RdpConnection.fromJson(Map<String, dynamic> json) => RdpConnection(
@@ -83,6 +98,9 @@ class RdpConnection {
         trackpadMode: json['trackpad'] as bool? ?? false,
         keyboardVisible: json['keyboard'] as bool? ?? true,
         favorite: json['favorite'] as bool? ?? false,
+        clickKeys: ClickKeys.values.firstWhere(
+            (v) => v.name == json['clickKeys'],
+            orElse: () => ClickKeys.showBoth),
       );
 }
 
@@ -182,6 +200,7 @@ class RdpConnectionStore {
     bool trackpadMode = false,
     bool keyboardVisible = true,
     bool favorite = false,
+    ClickKeys clickKeys = ClickKeys.showBoth,
   }) async {
     final connection = RdpConnection(
       id: '${DateTime.now().millisecondsSinceEpoch}-${_nextId++}',
@@ -192,6 +211,7 @@ class RdpConnectionStore {
       trackpadMode: trackpadMode,
       keyboardVisible: keyboardVisible,
       favorite: favorite,
+      clickKeys: clickKeys,
     );
     final connections = await _loadRaw();
     connections.add(connection);

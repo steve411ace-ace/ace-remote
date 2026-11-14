@@ -1153,7 +1153,7 @@ void main() {
   });
 
   testWidgets(
-      'step 34: mouse connected hides Left/Right keys, Space grows (RDP)',
+      'step 36: clickKeys config hides Left/Right keys, Space grows (RDP)',
       (tester) async {
     const channel = MethodChannel('vn.aceremote.app/rdp/35');
     final messenger =
@@ -1163,15 +1163,23 @@ void main() {
       return null;
     });
     addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
-    addTearDown(() => MouseConnection.connected.value = false);
     final agent = Agent(
         baseUrl: defaultBaseUrl,
         client: MockClient((_) async {
           throw StateError('RDP must not contact agent');
         }));
     addTearDown(agent.dispose);
-    await tester.pumpWidget(MaterialApp(
-        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    Future<void> pumpWith(ClickKeys clickKeys) async {
+      await tester.pumpWidget(MaterialApp(
+          home: RemotePage(
+              agent: agent,
+              pollMs: () => 1000,
+              rdpMode: true,
+              rdpConnection: RdpConnectionStore.defaultConnection
+                  .copyWith(clickKeys: clickKeys))));
+      await tester.pump();
+    }
+
     List<String?> rowLabels() => tester
         .widgetList<Text>(find.descendant(
             of: find.byKey(const ValueKey('keyboard-row-5')),
@@ -1184,9 +1192,10 @@ void main() {
     // Widths below are Container widths; each key also has 2dp padding on
     // each side, so add 4 back to compare flex shares.
     double share(String label) => keySize(label).width + 4;
-    // No mouse: the two click keys are there, Space is its normal width
-    // (4.5 units wide = 4.5x a letter key; ratio, not absolute px, so
-    // pixel rounding on flex shares does not matter).
+    // showBoth (default): the two click keys are there, Space is its
+    // normal width (4.5 units = 4.5x a letter key; ratio, not absolute px,
+    // so pixel rounding on flex shares does not matter).
+    await pumpWith(ClickKeys.showBoth);
     expect(rowLabels(), [
       'Ctrl',
       'Win',
@@ -1201,45 +1210,48 @@ void main() {
       '→'
     ]);
     expect(share('Space') / share('A'), closeTo(4.5, 0.1));
-    // A mouse is plugged in: Left/Right disappear and Space takes their
-    // width (4.5 + 2 x 1.25 = 7.0 units); every other key keeps its size.
-    MouseConnection.connected.value = true;
-    await tester.pump();
-    expect(rowLabels(),
-        ['Ctrl', 'Win', 'Alt', 'Space', 'Alt', 'Ctrl', '←', '↓', '→']);
-    expect(find.text('Left'), findsNothing);
-    expect(find.text('Right'), findsNothing);
-    expect(share('Space') / share('A'), closeTo(7.0, 0.15));
-    // Unplug: the keys come back.
-    MouseConnection.connected.value = false;
-    await tester.pump();
+    // hideRight: Left stays, Right disappears, Space takes Right's width
+    // (4.5 + 1.25 = 5.75 units).
+    await pumpWith(ClickKeys.hideRight);
     expect(rowLabels(), [
       'Ctrl',
       'Win',
       'Alt',
       'Left',
       'Space',
-      'Right',
       'Alt',
       'Ctrl',
       '←',
       '↓',
       '→'
     ]);
+    expect(find.text('Right'), findsNothing);
+    expect(share('Space') / share('A'), closeTo(5.75, 0.15));
+    // hideBoth: both keys disappear and Space takes their width
+    // (4.5 + 2 x 1.25 = 7.0 units); every other key keeps its size.
+    await pumpWith(ClickKeys.hideBoth);
+    expect(rowLabels(),
+        ['Ctrl', 'Win', 'Alt', 'Space', 'Alt', 'Ctrl', '←', '↓', '→']);
+    expect(find.text('Left'), findsNothing);
+    expect(find.text('Right'), findsNothing);
+    expect(share('Space') / share('A'), closeTo(7.0, 0.15));
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('step 34: agent mode keeps Left/Right keys with a mouse',
+  testWidgets('step 36: agent mode always shows Left/Right keys',
       (tester) async {
-    addTearDown(() => MouseConnection.connected.value = false);
-    MouseConnection.connected.value = true;
     final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
     addTearDown(agent.dispose);
     await tester.pumpWidget(MaterialApp(
-        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: false)));
+        home: RemotePage(
+            agent: agent,
+            pollMs: () => 1000,
+            rdpMode: false,
+            rdpConnection: RdpConnectionStore.defaultConnection
+                .copyWith(clickKeys: ClickKeys.hideBoth))));
     await tester.pump();
-    // The mouse does not drive the agent-mode cursor, so the on-screen
-    // click keys stay.
+    // The click-keys setting only applies in RDP mode; agent mode keeps
+    // both keys even when the connection says hideBoth.
     expect(find.text('Left'), findsOneWidget);
     expect(find.text('Right'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
@@ -1286,7 +1298,6 @@ void main() {
       return null;
     });
     addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
-    addTearDown(() => MouseConnection.connected.value = false);
     // Pin dpr to 1.0 so logical px == surface px in the expectations below
     // (the test binding defaults to 3.0).
     tester.view.devicePixelRatio = 1.0;

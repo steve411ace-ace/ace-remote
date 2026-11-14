@@ -679,6 +679,8 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
   late final password = TextEditingController();
   late bool trackpadMode = widget.existing?.trackpadMode ?? false;
   late bool keyboardVisible = widget.existing?.keyboardVisible ?? true;
+  late ClickKeys clickKeys =
+      widget.existing?.clickKeys ?? ClickKeys.showBoth;
   String? error;
   bool loadingPassword = false;
 
@@ -725,7 +727,8 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
           username: username.text.trim(),
           password: password.text,
           trackpadMode: trackpadMode,
-          keyboardVisible: keyboardVisible);
+          keyboardVisible: keyboardVisible,
+          clickKeys: clickKeys);
     } else {
       await widget.store.update(
           existing.copyWith(
@@ -734,7 +737,8 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
               port: portNumber,
               username: username.text.trim(),
               trackpadMode: trackpadMode,
-              keyboardVisible: keyboardVisible),
+              keyboardVisible: keyboardVisible,
+              clickKeys: clickKeys),
           password: password.text);
     }
     if (mounted) Navigator.pop(context, true);
@@ -744,7 +748,10 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
   Widget build(BuildContext context) => Scaffold(
       appBar: AppBar(
           title: Text(widget.existing == null ? 'Thêm kết nối' : 'Sửa kết nối')),
-      body: ListView(padding: const EdgeInsets.all(20), children: [
+      body: ListView(
+          key: const ValueKey('connection-editor-list'),
+          padding: const EdgeInsets.all(20),
+          children: [
         TextField(
             key: const ValueKey('connection-name'),
             controller: name,
@@ -783,6 +790,33 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
                 'Tắt: màn hình remote chiếm toàn bộ màn hình khi kết nối.'),
             value: keyboardVisible,
             onChanged: (v) => setState(() => keyboardVisible = v)),
+        // Step 36: which click keys flank Space, manual only (An: "Thay
+        // hẳn, chỉnh tay thôi"). A connected mouse no longer hides them.
+        const SizedBox(height: 8),
+        const Text('Phím Left/Right',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        RadioGroup<ClickKeys>(
+            groupValue: clickKeys,
+            onChanged: (v) {
+              if (v != null) setState(() => clickKeys = v);
+            },
+            child: const Column(children: [
+              RadioListTile<ClickKeys>(
+                  title: Text('Hiện cả 2'),
+                  subtitle: Text(
+                      'Hiện cả phím Left và Right hai bên phím Space.'),
+                  value: ClickKeys.showBoth),
+              RadioListTile<ClickKeys>(
+                  title: Text('Ẩn Right'),
+                  subtitle:
+                      Text('Chỉ ẩn phím Right, phím Space dài thêm.'),
+                  value: ClickKeys.hideRight),
+              RadioListTile<ClickKeys>(
+                  title: Text('Ẩn cả 2'),
+                  subtitle:
+                      Text('Ẩn cả hai phím, phím Space dài nhất.'),
+                  value: ClickKeys.hideBoth),
+            ])),
         if (error != null)
           Padding(
               padding: const EdgeInsets.only(top: 8),
@@ -1075,9 +1109,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Step 34: track whether a physical mouse is attached (drives the
-    // Left/Right key visibility in the keyboard below).
-    unawaited(MouseConnection.start());
     if (agent.displays.isNotEmpty) {
       final first = agent.displays.first;
       monitor = first.id;
@@ -1592,10 +1623,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     return min(byWidth, byHeight);
   }
 
-  Widget keyboardPanel() => ValueListenableBuilder<bool>(
-      valueListenable: MouseConnection.connected,
-      builder: (context, mouseConnected, _) =>
-          LayoutBuilder(builder: (context, box) {
+  Widget keyboardPanel() => LayoutBuilder(builder: (context, box) {
         keyTargets.clear();
         keyLabels.clear();
         // Step 25, item 4: the keyboard adapts to the screen instead of
@@ -1627,12 +1655,17 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         // +8%); a number key is 378/15.5 = 24.4px (+5%). The row height
         // is untouched (step 26, item 2 was cancelled).
         final narrow = box.maxWidth < 600;
-        // Step 34: with a physical mouse connected the on-screen Left/Right
-        // click keys are redundant (the mouse has real buttons), so they
-        // are hidden and Space grows by their width (RDP mode only; agent
-        // mode keeps them). Row total unchanged, so every other key keeps
-        // its size.
-        final hideClickKeys = widget.rdpMode && mouseConnected;
+        // Step 36: the click keys are manual now (An: "Thay hẳn, chỉnh
+        // tay thôi") — the per-connection `clickKeys` setting decides, and
+        // a connected mouse no longer hides them. RDP mode only; agent
+        // mode always shows both. Row total unchanged, so every other key
+        // keeps its size; Space takes the width of each hidden key.
+        final clickKeys =
+            widget.rdpConnection?.clickKeys ?? ClickKeys.showBoth;
+        final hideLeft =
+            widget.rdpMode && clickKeys == ClickKeys.hideBoth;
+        final hideRight =
+            widget.rdpMode && clickKeys != ClickKeys.showBoth;
         final delU = narrow ? 2.0 : 2.5;
         final backspaceU = narrow ? 1.5 : 2.0;
         final tabU = narrow ? 1.0 : 1.5;
@@ -1701,18 +1734,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               // Alt (1.25), same colors as the other keys. The labels are
               // distinct now, so no keyId is needed for the highlight.
               // Narrow mode: modifiers 1.15, Space 4.0 (row total 15.05).
-              // Step 34: with a mouse connected both keys are hidden and
-              // Space takes their width (see hideClickKeys above).
+              // Step 36: each hidden key's width goes to Space (see
+              // hideLeft/hideRight above).
               row(5, [
                 laptopKey('Ctrl', units: modU, modifier: true),
                 laptopKey('Win', units: modU, modifier: true),
                 laptopKey('Alt', units: modU, modifier: true),
-                if (!hideClickKeys)
+                if (!hideLeft)
                   laptopKey('Left', units: modU, mouseButton: 'left'),
                 laptopKey('Space',
-                    units: hideClickKeys ? spaceU + modU * 2 : spaceU,
+                    units: spaceU +
+                        (hideLeft ? modU : 0) +
+                        (hideRight ? modU : 0),
                     command: 'Space'),
-                if (!hideClickKeys)
+                if (!hideRight)
                   laptopKey('Right', units: modU, mouseButton: 'right'),
                 laptopKey('Alt', units: modU, modifier: true),
                 laptopKey('Ctrl', units: modU, modifier: true),
@@ -1726,8 +1761,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               if (!widget.rdpMode)
                 row(6, [laptopKey('Click trái'), laptopKey('Click phải')]),
             ]))));
-      }),
-  );
+  });
 
   // Step 34: physical-mouse state. The mouse drives the PC cursor ONLY
   // over the remote screen (An: "trên phần màn hình pc thôi") — hover

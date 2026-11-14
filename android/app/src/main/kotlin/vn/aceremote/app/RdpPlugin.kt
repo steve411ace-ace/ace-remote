@@ -8,7 +8,6 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.drawable.BitmapDrawable
-import android.hardware.input.InputManager
 import android.os.Handler
 import android.os.SystemClock
 import android.util.Log
@@ -31,55 +30,17 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 class RdpPlugin : FlutterPlugin {
-    // Step 34: whether a physical mouse is connected (Android
-    // InputDeviceListener), pushed to Dart so the on-screen Left/Right
-    // click keys can hide while a real mouse is attached.
-    private var inputChannel: MethodChannel? = null
-    private var inputManager: InputManager? = null
-    private var inputListener: InputManager.InputDeviceListener? = null
-    private var mouseConnected = false
-
+    // Step 36 removed the mouse-detection channel ('vn.aceremote.app/input'
+    // + InputDeviceListener): the Left/Right keys are manual now (An: "Thay
+    // hẳn, chỉnh tay thôi"), so nothing needs to know whether a mouse is
+    // attached. The step 35 isExternal fix went with it — it never shipped.
+    // Mouse driving itself (mouseMove/mouseButton channels below) and the
+    // SOURCE_MOUSE ignore in onTouch stay: a real mouse still drives the
+    // PC cursor, and its clicks never fire twice.
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         binding.platformViewRegistry.registerViewFactory("vn.aceremote.app/rdp", RdpFactory(binding))
-        val context = binding.applicationContext
-        inputChannel = MethodChannel(binding.binaryMessenger, "vn.aceremote.app/input").apply {
-            setMethodCallHandler { call, result ->
-                if (call.method == "isMouseConnected") result.success(isMouseConnected())
-                else result.notImplemented()
-            }
-        }
-        inputManager = context.getSystemService(Context.INPUT_SERVICE) as? InputManager
-        mouseConnected = isMouseConnected()
-        inputListener = object : InputManager.InputDeviceListener {
-            override fun onInputDeviceAdded(deviceId: Int) = onDevicesChanged()
-            override fun onInputDeviceRemoved(deviceId: Int) = onDevicesChanged()
-            override fun onInputDeviceChanged(deviceId: Int) = onDevicesChanged()
-        }
-        inputListener?.let {
-            inputManager?.registerInputDeviceListener(it, Handler(Looper.getMainLooper()))
-        }
     }
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        inputListener?.let { inputManager?.unregisterInputDeviceListener(it) }
-        inputListener = null
-        inputManager = null
-        inputChannel?.setMethodCallHandler(null)
-        inputChannel = null
-    }
-
-    private fun onDevicesChanged() {
-        val now = isMouseConnected()
-        if (now != mouseConnected) {
-            mouseConnected = now
-            inputChannel?.invokeMethod("mouseChanged", mapOf("connected" to now))
-        }
-    }
-
-    private fun isMouseConnected(): Boolean {
-        val manager = inputManager ?: return false
-        return manager.inputDeviceIds.any { id ->
-            InputDevice.getDevice(id)?.supportsSource(InputDevice.SOURCE_MOUSE) == true
-        }
     }
 }
 

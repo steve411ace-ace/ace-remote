@@ -131,37 +131,11 @@ class RdpController extends ValueNotifier<Map<String, dynamic>> {
   }
 }
 
-/// Step 34: whether a physical mouse is currently connected to the phone.
-/// Backed by the native 'vn.aceremote.app/input' channel (Android
-/// InputDeviceListener): Dart asks once for the current state and native
-/// pushes 'mouseChanged' on plug/unplug. Without the channel (tests, web)
-/// it simply stays false.
-class MouseConnection {
-  static final ValueNotifier<bool> connected = ValueNotifier<bool>(false);
-  static MethodChannel? _channel;
-  static bool _started = false;
-
-  static Future<void> start() async {
-    if (_started) return;
-    _started = true;
-    _channel = const MethodChannel('vn.aceremote.app/input');
-    _channel!.setMethodCallHandler((call) async {
-      if (call.method == 'mouseChanged') {
-        final args = call.arguments;
-        if (args is Map) connected.value = args['connected'] == true;
-      }
-    });
-    try {
-      final current = await _channel!.invokeMethod<bool>('isMouseConnected');
-      if (current != null) connected.value = current;
-    } catch (_) {
-      // No native input channel (tests / non-Android): stay disconnected.
-      // Catch everything here — MissingPluginException is NOT a
-      // PlatformException, so `on PlatformException` would miss it and the
-      // uncaught error would fail the caller (seen in remote_test.dart).
-    }
-  }
-}
+/// Step 36 removed MouseConnection: the Left/Right keys are manual now
+/// (An: "Thay hẳn, chỉnh tay thôi"), so nothing needs to know whether a
+/// mouse is attached. The mouse itself still drives the PC cursor through
+/// RdpController.sendMouseMove/sendMouseButton below, and the native touch
+/// path still ignores SOURCE_MOUSE events so a click never fires twice.
 
 class RdpSurface extends StatefulWidget {
   const RdpSurface({super.key, this.controller});

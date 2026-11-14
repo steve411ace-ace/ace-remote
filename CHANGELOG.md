@@ -6,6 +6,15 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.4+21] - 2026-11-14
+
+- Phím Left/Right giờ chỉnh tay trong màn hình Sửa kết nối, chung chỗ với
+  công tắc Trackpad và Hiện bàn phím, 3 mức: Hiện cả 2, Ẩn Right, Ẩn cả 2.
+  Phím nào ẩn thì phím Space dài thêm đúng bằng chiều rộng phím đó. Việc tự
+  ẩn theo chuột cắm vào đã bỏ hẳn: bản 1.5.3 ẩn mất 2 phím ngay cả khi chưa
+  cắm chuột, vì cách nhận biết cũ đếm cả bộ nhận bút S Pen gắn sẵn trong
+  máy. Mặc định là Hiện cả 2.
+
 ## [1.5.3+20] - 2026-11-14
 
 - Chuột rời cắm vào điện thoại giờ điều khiển được chuột máy tính trong
