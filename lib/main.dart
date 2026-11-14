@@ -1793,14 +1793,17 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               // (GestureDetector: no key lives here, so a tap has nothing
               // to type). It works whether or not 'Chế độ Trackpad' is
               // on — that switch only controls swiping on the keys.
-              // Step 38: rounded like a laptop trackpad (radius 16) and
-              // blank — a real trackpad has no icon.
               // Step 39 (An, correcting step 38): the visible pad is the
               // gray rounded rectangle IN THE MIDDLE, like the photo he
               // sent — a laptop trackpad sitting in the middle of the
-              // palm rest, 60% of the strip width, clearly gray against
-              // the dark deck. The touch zone stays the whole strip, so
-              // the pad still works full width as he asked before.
+              // palm rest, clearly gray against the dark deck. The touch
+              // zone stays the whole strip, so the pad still works full
+              // width as he asked before.
+              // Step 40 (An, nhìn ảnh chụp màn hình): bo 16 trên miếng
+              // trackpad lùn làm nó trông như viên thuốc, và miếng 60%
+              // rộng quá, trông như thanh ngang. Trackpad laptop thật chỉ
+              // bo nhẹ và chỉ rộng khoảng 32–40% thân máy (MacBook ~40%)
+              // — bo xuống 8, rộng xuống 40% cho đúng tỉ lệ laptop.
               if (showTrackpadArea) SizedBox(height: trackpadGap),
               if (showTrackpadArea)
                 SizedBox(
@@ -1811,7 +1814,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                         onTap: () => unawaited(rdpController
                             .clickAtLastPosition('left')),
                         child: LayoutBuilder(builder: (context, areaBox) {
-                          final padWidth = areaBox.maxWidth * 0.6;
+                          final padWidth = areaBox.maxWidth * 0.4;
                           return Center(
                               child: Container(
                                   key: const ValueKey('trackpad-pad'),
@@ -1820,7 +1823,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                                   decoration: BoxDecoration(
                                       color: const Color(0xff3a3b40),
                                       borderRadius:
-                                          BorderRadius.circular(16),
+                                          BorderRadius.circular(8),
                                       border: Border.all(
                                           color: Colors.white12))));
                         }))),

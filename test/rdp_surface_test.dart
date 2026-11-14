@@ -1304,16 +1304,20 @@ void main() {
     // middle, like the photo An sent — 60% of the strip width, centered,
     // clearly gray (#3a3b40) against the dark deck. The touch zone is
     // still the whole strip (792 wide).
+    // Step 40: corner radius 16 -> 8 — on the short pad, 16 looked like
+    // a pill; a real laptop trackpad is only gently rounded. Pad width
+    // 60% -> 40% of the strip (MacBook-like): at 60% it looked like a
+    // wide bar, not a laptop trackpad.
     final padBox = tester.widget<Container>(
         find.byKey(const ValueKey('trackpad-pad')));
     expect((padBox.decoration as BoxDecoration?)?.borderRadius,
-        BorderRadius.circular(16));
+        BorderRadius.circular(8));
     expect((padBox.decoration as BoxDecoration?)?.color,
         const Color(0xff3a3b40));
     expect(tester.getSize(find.byKey(const ValueKey('trackpad-pad'))).width,
-        closeTo(475.2, 2.0));
+        closeTo(316.8, 2.0));
     expect(tester.getTopLeft(find.byKey(const ValueKey('trackpad-pad'))).dx,
-        closeTo(162.4, 2.0));
+        closeTo(241.6, 2.0));
     expect(find.byIcon(Icons.touch_app_outlined), findsNothing);
     // Unfolded + off: no area, full-height keys.
     await pumpWith(const Size(800, 800), false);

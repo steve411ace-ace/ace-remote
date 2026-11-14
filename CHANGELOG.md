@@ -6,6 +6,13 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.8+25] - 2026-11-14
+
+- Trackpad xám thu hẹp cho đúng tỉ lệ laptop thật: rộng 40% dải bàn
+  phím (tỉ lệ MacBook, trước là 60% trông như thanh ngang), bo góc
+  giảm 16 xuống 8 (bo nhẹ như trackpad laptop, trước trông như viên
+  thuốc). Vùng cảm ứng vẫn full chiều ngang như cũ.
+
 ## [1.5.7+24] - 2026-11-14
 
 - Vùng trackpad giờ là miếng xám bo tròn nằm giữa như ảnh anh gửi
