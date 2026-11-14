@@ -6,6 +6,14 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.1+18] - 2026-11-14
+
+- Widget: bo góc ngoài 28dp đều + viền 1dp (chuẩn Thuốc Vui — trước đây bitmap
+  nền cố định 400×200 bị kéo giãn không đều nên góc bo thành ellipse); chạm
+  bất cứ đâu ngoài 3 nút đều mở app và kết nối (trước đây chạm không mở được
+  vì dùng intent ACTION_VIEW không resolve); app đọc lại dữ liệu mỗi khi mở
+  nên bấm nút trên widget xong vào app là thấy đổi theo ngay.
+
 ## [1.5.0+16] - 2026-11-14
 
 - Phiên bản tăng lên 1.5.0 (16): sửa cách đánh phiên bản — mỗi bản build giờ
@@ -21,11 +29,6 @@ và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
   "Kết nối" (chạm vào tên máy là kết nối); làm đẹp lại toàn bộ widget theo
   Material 3 (icon tile xanh ngọc, nút chuyển hình tròn với icon mũi tên đổi
   chỗ, pill rõ trạng thái bật/tắt).
-- Widget: bo góc ngoài 28dp đều + viền 1dp (chuẩn Thuốc Vui — trước đây bitmap
-  nền cố định 400×200 bị kéo giãn không đều nên góc bo thành ellipse); chạm
-  bất cứ đâu ngoài 3 nút đều mở app và kết nối (trước đây chạm không mở được
-  vì dùng intent ACTION_VIEW không resolve); app đọc lại dữ liệu mỗi khi mở
-  nên bấm nút trên widget xong vào app là thấy đổi theo ngay.
 - Cập nhật tại chỗ (theo cách Thuốc Vui): khóa ký debug cố định được commit
   trong repo dạng base64 nên mọi bản build cùng 1 chữ ký — từ bản này về sau
   bấm "Cập nhật" trên App Tester là được, không cần gỡ/cài, không mất kết nối
