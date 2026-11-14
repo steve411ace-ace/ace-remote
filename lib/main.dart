@@ -797,9 +797,20 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
             title: const Text('Vùng trackpad'),
             subtitle: const Text(
                 'Chỉ khi mở màn hình ra: thêm vùng cảm ứng dưới bàn phím '
-                'để di chuột, dãy phím nhỏ lại. Màn hình remote không đổi.'),
+                'để di chuột, dãy phím nhỏ lại. Màn hình remote không đổi. '
+                'Bật: phím Left/Right mặc định ẩn (đổi lại được ở mục '
+                'Phím Left/Right bên dưới).'),
             value: trackpadArea,
-            onChanged: (v) => setState(() => trackpadArea = v)),
+            onChanged: (v) => setState(() {
+                  trackpadArea = v;
+                  // Step 41: turning the trackpad on hides the Left/Right
+                  // click keys by default — tapping the pad left-clicks
+                  // and a two-finger tap right-clicks, so the keys are
+                  // redundant and Space gets wider. This only sets the
+                  // default: the user can still pick another level in
+                  // the Phím Left/Right section below.
+                  if (v) clickKeys = ClickKeys.hideBoth;
+                })),
         // Step 36: which click keys flank Space, manual only (An: "Thay
         // hẳn, chỉnh tay thôi"). A connected mouse no longer hides them.
         const SizedBox(height: 8),

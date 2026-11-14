@@ -6,6 +6,13 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.9+26] - 2026-11-14
+
+- Bật "Vùng trackpad" thì phím Left/Right mặc định ẩn (chạm vùng là
+  click trái, chạm 2 ngón là click phải nên 2 phím thừa, Space được
+  dài ra). Đây chỉ là mặc định: anh vẫn chọn lại "Hiện cả 2" trong
+  mục Phím Left/Right nếu muốn.
+
 ## [1.5.8+25] - 2026-11-14
 
 - Trackpad xám thu hẹp cho đúng tỉ lệ laptop thật: rộng 40% dải bàn

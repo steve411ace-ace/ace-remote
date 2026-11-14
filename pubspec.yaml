@@ -1,7 +1,7 @@
 name: ace_remote
 description: Điều khiển PC Windows ace qua Tailscale.
 publish_to: none
-version: 1.5.8+25
+version: 1.5.9+26
 environment:
   sdk: ^3.5.4
 dependencies:

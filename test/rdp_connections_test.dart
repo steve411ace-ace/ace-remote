@@ -411,6 +411,68 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('step 41: enabling the trackpad defaults click keys to hidden',
+      (tester) async {
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: Home(
+            agent: agent,
+            pollMs: () => 1000,
+            settings: () => const SizedBox())));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('ace — Windows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    // Turn the trackpad area on: the click-keys level follows to hide
+    // both by default.
+    await tester.ensureVisible(find.text('Vùng trackpad'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Vùng trackpad'));
+    await tester.pump();
+    await _saveFromEditor(tester);
+    final store = RdpConnectionStore();
+    final all = await store.load();
+    expect(all.singleWhere((c) => c.name == 'ace — Windows').trackpadArea,
+        isTrue);
+    expect(all.singleWhere((c) => c.name == 'ace — Windows').clickKeys,
+        ClickKeys.hideBoth);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('step 41: the trackpad default can be overridden',
+      (tester) async {
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: Home(
+            agent: agent,
+            pollMs: () => 1000,
+            settings: () => const SizedBox())));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('ace — Windows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Vùng trackpad'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Vùng trackpad'));
+    await tester.pump();
+    // The user can still pick "Hiện cả 2" afterwards.
+    await tester.ensureVisible(find.text('Hiện cả 2'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Hiện cả 2'));
+    await tester.pump();
+    await _saveFromEditor(tester);
+    final store = RdpConnectionStore();
+    final all = await store.load();
+    final edited = all.singleWhere((c) => c.name == 'ace — Windows');
+    expect(edited.trackpadArea, isTrue);
+    expect(edited.clickKeys, ClickKeys.showBoth);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('long-press menu deletes a connection after confirmation',
       (tester) async {
     final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
