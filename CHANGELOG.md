@@ -6,6 +6,13 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.2+19] - 2026-11-14
+
+- Widget: vẽ lại icon nút "Bàn phím" dạng outline (cùng style với icon
+  Trackpad — viền + 3 phím + phím Space). Icon cũ là hình đặc của Material,
+  lỗ phím chỉ 2×2 nên ở cỡ 18dp các lỗ biến mất, nhìn thành một cục mờ
+  không rõ là bàn phím.
+
 ## [1.5.1+18] - 2026-11-14
 
 - Widget: bo góc ngoài 28dp đều + viền 1dp (chuẩn Thuốc Vui — trước đây bitmap
