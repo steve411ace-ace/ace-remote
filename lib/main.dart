@@ -1831,12 +1831,32 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                                   key: const ValueKey('trackpad-pad'),
                                   width: padWidth,
                                   height: trackpadHeight,
+                                  // Step 42 (An): the pad's flat solid
+                                  // gray doesn't look like the photo — the
+                                  // real trackpad has a soft sheen (lighter
+                                  // on top, darker below, like light falling
+                                  // on it) and a gentle drop shadow lifting
+                                  // it off the deck. Subtle vertical
+                                  // gradient + soft shadow; the average
+                                  // tone stays the same gray.
                                   decoration: BoxDecoration(
-                                      color: const Color(0xff3a3b40),
+                                      gradient: const LinearGradient(
+                                          begin: Alignment.topCenter,
+                                          end: Alignment.bottomCenter,
+                                          colors: [
+                                            Color(0xff48494f),
+                                            Color(0xff343539),
+                                          ]),
                                       borderRadius:
                                           BorderRadius.circular(8),
                                       border: Border.all(
-                                          color: Colors.white12))));
+                                          color: Colors.white12),
+                                      boxShadow: const [
+                                        BoxShadow(
+                                            color: Color(0x66000000),
+                                            blurRadius: 8,
+                                            offset: Offset(0, 2)),
+                                      ])));
                         }))),
             ]))));
   });

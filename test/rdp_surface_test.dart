@@ -1312,8 +1312,14 @@ void main() {
         find.byKey(const ValueKey('trackpad-pad')));
     expect((padBox.decoration as BoxDecoration?)?.borderRadius,
         BorderRadius.circular(8));
-    expect((padBox.decoration as BoxDecoration?)?.color,
-        const Color(0xff3a3b40));
+    // Step 42: the pad has a sheen gradient + soft drop shadow like the
+    // photo's trackpad, not a flat solid gray.
+    expect((padBox.decoration as BoxDecoration?)?.color, isNull);
+    final padGradient =
+        (padBox.decoration as BoxDecoration?)?.gradient as LinearGradient?;
+    expect(padGradient?.colors,
+        [const Color(0xff48494f), const Color(0xff343539)]);
+    expect((padBox.decoration as BoxDecoration?)?.boxShadow?.length, 1);
     expect(tester.getSize(find.byKey(const ValueKey('trackpad-pad'))).width,
         closeTo(316.8, 2.0));
     expect(tester.getTopLeft(find.byKey(const ValueKey('trackpad-pad'))).dx,

@@ -6,6 +6,13 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.10+27] - 2026-11-14
+
+- Miếng trackpad thêm màu bóng như trackpad thật trong ảnh: gradient
+  dọc nhẹ (trên sáng hơn, dưới tối hơn như ánh sáng chiếu xuống) +
+  bóng đổ mềm nâng miếng trackpad khỏi mặt bàn phím. Tông xám trung
+  bình giữ nguyên.
+
 ## [1.5.9+26] - 2026-11-14
 
 - Bật "Vùng trackpad" thì phím Left/Right mặc định ẩn (chạm vùng là
