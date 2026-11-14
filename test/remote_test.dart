@@ -752,14 +752,16 @@ void main() {
     addTearDown(a.dispose);
     await tester.pumpWidget(
         MaterialApp(home: RemotePage(agent: a, pollMs: () => 1000)));
-    Color? color(String label) => (tester
+    Color? color(String label) => ((tester
             .widget<Container>(find
                 .ancestor(
                     of: find.text(label).first,
                     matching: find.byType(Container))
                 .first)
             .decoration as BoxDecoration)
-        .color;
+        .gradient as LinearGradient?)
+        ?.colors
+        .first;
     for (final label in [
       'Q',
       'Ctrl',
@@ -772,7 +774,7 @@ void main() {
       final gesture =
           await tester.startGesture(tester.getCenter(find.text(label).first));
       await tester.pump();
-      expect(color(label), const Color(0xff8b929e));
+      expect(color(label), const Color(0xff9aa0a8));
       await gesture.cancel();
       await tester.pump();
       expect(color(label), before);
@@ -781,13 +783,13 @@ void main() {
       await tester.pump();
       await tap.up();
       await tester.pump();
-      expect(color(label), isNot(const Color(0xff8b929e)));
+      expect(color(label), isNot(const Color(0xff9aa0a8)));
     }
     final drag = await tester.startGesture(tester.getCenter(find.text('Q')));
     await tester.pump();
     await drag.moveBy(const Offset(30, 0));
     await tester.pump();
-    expect(color('Q'), const Color(0xff32353c));
+    expect(color('Q'), const Color(0xff3a3d44));
     await drag.up();
     await tester.pumpWidget(const SizedBox());
   });

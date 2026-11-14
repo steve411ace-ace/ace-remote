@@ -196,14 +196,16 @@ void main() {
     await tester.pump();
     final dynamic state = tester.state(find.byType(RemotePage));
     expect(state.capsLockOn, isFalse);
-    Color? capsColor() => (tester
+    Color? capsColor() => ((tester
             .widget<Container>(find
                 .ancestor(
                     of: find.text('Caps').first,
                     matching: find.byType(Container))
                 .first)
             .decoration as BoxDecoration)
-        .color;
+        .gradient as LinearGradient?)
+        ?.colors
+        .first;
     Future<void> tap(String label) async {
       await tester.tap(find.text(label).first);
       await tester.pumpAndSettle();
@@ -216,7 +218,7 @@ void main() {
       {'vk': 0x14, 'down': false},
     ]);
     expect(state.capsLockOn, isTrue);
-    expect(capsColor(), const Color(0xff2bb3a3));
+    expect(capsColor(), const Color(0xff33c0af));
     // A letter key does not clear Caps Lock (unlike Shift one-shot).
     calls.clear();
     await tap('A');
@@ -225,7 +227,7 @@ void main() {
       {'vk': 0x41, 'down': false},
     ]);
     expect(state.capsLockOn, isTrue);
-    expect(capsColor(), const Color(0xff2bb3a3));
+    expect(capsColor(), const Color(0xff33c0af));
     // Second Caps press: toggle off, highlight gone.
     calls.clear();
     await tap('Caps');
@@ -234,7 +236,7 @@ void main() {
       {'vk': 0x14, 'down': false},
     ]);
     expect(state.capsLockOn, isFalse);
-    expect(capsColor(), const Color(0xff32353c));
+    expect(capsColor(), const Color(0xff3a3d44));
     // Shift is still a one-shot modifier and does not touch Caps Lock.
     calls.clear();
     await tap('Shift');
@@ -1384,6 +1386,42 @@ void main() {
         const Offset(60, 0));
     await tester.pump();
     expect(calls.any((c) => c.method == 'moveRelative'), isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('step 43: keys have a keycap sheen gradient and drop shadow',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/40');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    tester.view.physicalSize = const Size(800, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    await tester.pump();
+    await tester.pumpAndSettle();
+    final keyBox = tester.widget<Container>(find
+        .ancestor(of: find.text('A'), matching: find.byType(Container))
+        .first);
+    final decoration = keyBox.decoration as BoxDecoration?;
+    // Real keycaps: a soft sheen, lighter on top, with a gentle drop
+    // shadow lifting the key off the deck — not a flat solid color.
+    expect((decoration?.gradient as LinearGradient?)?.colors,
+        [const Color(0xff3a3d44), const Color(0xff2b2e34)]);
+    expect(decoration?.boxShadow?.length, 1);
     await tester.pumpWidget(const SizedBox());
   });
 

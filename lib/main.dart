@@ -1611,13 +1611,40 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                         // Modern key look (step 23): larger radius, lighter
                         // key surface with a softer border; an armed
                         // modifier / Caps Lock on uses the app teal accent.
-                        color: pressedLabel == (keyId ?? label)
-                            ? const Color(0xff8b929e)
-                            : selected
-                                ? const Color(0xff2bb3a3)
-                                : const Color(0xff32353c),
+                        // Step 43 (An: make the whole keyboard look as
+                        // real as possible): real keycaps are not flat —
+                        // each has a soft sheen (lighter on top, darker
+                        // below, like light falling on it) and a gentle
+                        // drop shadow lifting it off the deck. A pressed
+                        // key loses its shadow (pushed-in look). The
+                        // average tone of each state stays the same.
+                        gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: pressedLabel == (keyId ?? label)
+                                ? [
+                                    const Color(0xff9aa0a8),
+                                    const Color(0xff7e848d)
+                                  ]
+                                : selected
+                                    ? [
+                                        const Color(0xff33c0af),
+                                        const Color(0xff25a08f)
+                                      ]
+                                    : [
+                                        const Color(0xff3a3d44),
+                                        const Color(0xff2b2e34)
+                                      ]),
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xff4a4d55))),
+                        border: Border.all(color: const Color(0xff4a4d55)),
+                        boxShadow: pressedLabel == (keyId ?? label)
+                            ? null
+                            : const [
+                                BoxShadow(
+                                    color: Color(0x55000000),
+                                    blurRadius: 3,
+                                    offset: Offset(0, 2)),
+                              ]),
                     child: Center(
                         child: Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 2),

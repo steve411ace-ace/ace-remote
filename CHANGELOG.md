@@ -6,6 +6,14 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.11+28] - 2026-11-14
+
+- Cả bàn phím giờ như phím laptop thật: mỗi phím có độ bóng nhẹ (trên
+  sáng hơn, dưới tối hơn như ánh sáng chiếu xuống) + bóng đổ mềm nâng
+  phím khỏi mặt bàn phím; phím đang bấm thì mất bóng (cảm giác nhấn
+  xuống). Tông màu mỗi trạng thái giữ nguyên.
+- Gồm cả màu bóng trackpad ở 1.5.10 (gradient + bóng đổ mềm).
+
 ## [1.5.10+27] - 2026-11-14
 
 - Miếng trackpad thêm màu bóng như trackpad thật trong ảnh: gradient
