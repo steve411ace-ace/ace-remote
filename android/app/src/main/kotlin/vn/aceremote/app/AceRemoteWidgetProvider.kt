@@ -461,6 +461,8 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
             // carried through saveConnections — otherwise a widget toggle
             // would rewrite the JSON and drop the setting.
             val clickKeys: String,
+            // Step 37: same for the trackpad-area setting.
+            val trackpadArea: Boolean,
         )
 
         /** Display order: favorites first, insertion order otherwise. */
@@ -493,6 +495,7 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
                             keyboard = o.optBoolean("keyboard", true),
                             favorite = o.optBoolean("favorite", false),
                             clickKeys = o.optString("clickKeys", "showBoth"),
+                            trackpadArea = o.optBoolean("trackpadArea", false),
                         )
                     )
                 }
@@ -516,6 +519,7 @@ class AceRemoteWidgetProvider : HomeWidgetProvider() {
                 o.put("keyboard", c.keyboard)
                 o.put("favorite", c.favorite)
                 o.put("clickKeys", c.clickKeys)
+                o.put("trackpadArea", c.trackpadArea)
                 arr.put(o)
             }
             prefs.edit().putString(KEY_CONNECTIONS, arr.toString()).apply()

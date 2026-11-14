@@ -28,6 +28,10 @@ Future<void> _saveFromEditor(WidgetTester tester) async {
         const Offset(0, -300));
     await tester.pump();
   }
+  // The button can be built (ListView cache extent) while still below the
+  // viewport, so a tap would land off-screen. Scroll it fully into view
+  // first — the editor grew again in step 37.
+  await tester.ensureVisible(find.text('Lưu'));
   await tester.pumpAndSettle();
   await tester.tap(find.text('Lưu'));
   await tester.pumpAndSettle();
@@ -178,6 +182,12 @@ void main() {
               .toJson());
       expect(roundTripped.clickKeys, level);
     }
+    // Step 37: trackpadArea round-trips and defaults to false.
+    final withArea = await store.add(
+        name: 'PC trackpad', host: '10.0.0.8', port: 3389, trackpadArea: true);
+    all = await store.load();
+    expect(all.firstWhere((c) => c.id == withArea.id).trackpadArea, isTrue);
+    expect(RdpConnection.fromJson(raw).trackpadArea, isFalse);
   });
 
   test('load sees values changed on disk after reload, without restart',

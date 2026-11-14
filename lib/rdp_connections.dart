@@ -30,8 +30,9 @@ enum ClickKeys { showBoth, hideRight, hideBoth }
 /// (step 23 redesign, 04:03) live in the JSON record: `trackpadMode`
 /// (false = touch, true = trackpad), `keyboardVisible` (false = the remote
 /// screen fills the whole page), `favorite` (pinned to the top of the
-/// list), and `clickKeys` (step 36). Older records without these keys get
-/// the defaults below.
+/// list), `clickKeys` (step 36), and `trackpadArea` (step 37: a dedicated
+/// trackpad strip under the keyboard, only when the phone is unfolded).
+/// Older records without these keys get the defaults below.
 class RdpConnection {
   const RdpConnection({
     required this.id,
@@ -43,6 +44,7 @@ class RdpConnection {
     this.keyboardVisible = true,
     this.favorite = false,
     this.clickKeys = ClickKeys.showBoth,
+    this.trackpadArea = false,
   });
 
   final String id;
@@ -54,6 +56,7 @@ class RdpConnection {
   final bool keyboardVisible;
   final bool favorite;
   final ClickKeys clickKeys;
+  final bool trackpadArea;
 
   String get address => '$host:$port';
 
@@ -66,6 +69,7 @@ class RdpConnection {
     bool? keyboardVisible,
     bool? favorite,
     ClickKeys? clickKeys,
+    bool? trackpadArea,
   }) =>
       RdpConnection(
         id: id,
@@ -77,6 +81,7 @@ class RdpConnection {
         keyboardVisible: keyboardVisible ?? this.keyboardVisible,
         favorite: favorite ?? this.favorite,
         clickKeys: clickKeys ?? this.clickKeys,
+        trackpadArea: trackpadArea ?? this.trackpadArea,
       );
 
   Map<String, dynamic> toJson() => {
@@ -88,6 +93,7 @@ class RdpConnection {
         'keyboard': keyboardVisible,
         'favorite': favorite,
         'clickKeys': clickKeys.name,
+        'trackpadArea': trackpadArea,
       };
 
   factory RdpConnection.fromJson(Map<String, dynamic> json) => RdpConnection(
@@ -101,6 +107,7 @@ class RdpConnection {
         clickKeys: ClickKeys.values.firstWhere(
             (v) => v.name == json['clickKeys'],
             orElse: () => ClickKeys.showBoth),
+        trackpadArea: json['trackpadArea'] as bool? ?? false,
       );
 }
 
@@ -201,6 +208,7 @@ class RdpConnectionStore {
     bool keyboardVisible = true,
     bool favorite = false,
     ClickKeys clickKeys = ClickKeys.showBoth,
+    bool trackpadArea = false,
   }) async {
     final connection = RdpConnection(
       id: '${DateTime.now().millisecondsSinceEpoch}-${_nextId++}',
@@ -212,6 +220,7 @@ class RdpConnectionStore {
       keyboardVisible: keyboardVisible,
       favorite: favorite,
       clickKeys: clickKeys,
+      trackpadArea: trackpadArea,
     );
     final connections = await _loadRaw();
     connections.add(connection);

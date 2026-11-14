@@ -6,6 +6,14 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.5+22] - 2026-11-14
+
+- Thêm config "Vùng trackpad" trong màn hình Sửa kết nối: chỉ khi mở màn
+  hình ra mới có vùng cảm ứng dưới bàn phím để di chuột (kéo = di chuột,
+  chạm = click trái, chạm 2 ngón = click phải, kéo 2 ngón = cuộn). Màn hình
+  remote giữ nguyên, dãy phím nhỏ lại để chừa chỗ cho vùng trackpad. Khi
+  gập màn hình lại thì vùng này ẩn đi, bàn phím về như cũ.
+
 ## [1.5.4+21] - 2026-11-14
 
 - Phím Left/Right giờ chỉnh tay trong màn hình Sửa kết nối, chung chỗ với

@@ -45,3 +45,6 @@ app.*.map.json
 # CI-generated FreeRDP binaries
 /android/app/libs/*.aar
 **/*.so
+
+# CI-generated release notes (release_notes.py); never commit
+/release-notes.txt

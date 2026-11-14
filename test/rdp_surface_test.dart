@@ -1257,6 +1257,106 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('step 37: trackpad area shows only unfolded with config on',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/38');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    Future<void> pumpWith(Size surface, bool area) async {
+      tester.view.physicalSize = surface;
+      tester.view.devicePixelRatio = 1.0;
+      await tester.pumpWidget(MaterialApp(
+          home: RemotePage(
+              agent: agent,
+              pollMs: () => 1000,
+              rdpMode: true,
+              rdpConnection: RdpConnectionStore.defaultConnection
+                  .copyWith(trackpadArea: area))));
+      await tester.pump();
+      await tester.pumpAndSettle();
+    }
+
+    Size keySize(String label) => tester.getSize(find
+        .ancestor(of: find.text(label), matching: find.byType(Container))
+        .first);
+    // Unfolded + on: the area shows below the keys, and the key rows
+    // shrink (row 56.6 -> 42.4, so an 'A' key is 38.4 tall, not 52.6).
+    await pumpWith(const Size(800, 800), true);
+    expect(find.byKey(const ValueKey('trackpad-area')), findsOneWidget);
+    expect(keySize('A').height, closeTo(38.4, 1.5));
+    // Unfolded + off: no area, full-height keys.
+    await pumpWith(const Size(800, 800), false);
+    expect(find.byKey(const ValueKey('trackpad-area')), findsNothing);
+    expect(keySize('A').height, closeTo(52.6, 1.0));
+    // Folded + on: the area stays hidden, keys full height.
+    await pumpWith(const Size(378, 800), true);
+    expect(find.byKey(const ValueKey('trackpad-area')), findsNothing);
+    expect(keySize('A').height, closeTo(40.0, 1.0));
+    tester.view.resetPhysicalSize();
+    tester.view.resetDevicePixelRatio();
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('step 37: tapping the area left-clicks, dragging moves',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/39');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    tester.view.physicalSize = const Size(800, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(
+            agent: agent,
+            pollMs: () => 1000,
+            rdpMode: true,
+            rdpConnection: RdpConnectionStore.defaultConnection
+                .copyWith(trackpadArea: true))));
+    await tester.pump();
+    await tester.pumpAndSettle();
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(39);
+    calls.clear();
+    // A plain tap on the area is a left click at the cursor.
+    await tester.tap(find.byKey(const ValueKey('trackpad-area')));
+    await tester.pump();
+    expect(calls,
+        contains(isMethodCall('click', arguments: {'button': 'left'})));
+    // A drag on the area moves the cursor relatively.
+    calls.clear();
+    await tester.drag(find.byKey(const ValueKey('trackpad-area')),
+        const Offset(60, 0));
+    await tester.pump();
+    expect(calls.any((c) => c.method == 'moveRelative'), isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('step 34: RdpController mouseMove/mouseButton call the channel',
       (tester) async {
     const channel = MethodChannel('vn.aceremote.app/rdp/36');

@@ -679,6 +679,7 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
   late final password = TextEditingController();
   late bool trackpadMode = widget.existing?.trackpadMode ?? false;
   late bool keyboardVisible = widget.existing?.keyboardVisible ?? true;
+  late bool trackpadArea = widget.existing?.trackpadArea ?? false;
   late ClickKeys clickKeys =
       widget.existing?.clickKeys ?? ClickKeys.showBoth;
   String? error;
@@ -728,7 +729,8 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
           password: password.text,
           trackpadMode: trackpadMode,
           keyboardVisible: keyboardVisible,
-          clickKeys: clickKeys);
+          clickKeys: clickKeys,
+          trackpadArea: trackpadArea);
     } else {
       await widget.store.update(
           existing.copyWith(
@@ -738,7 +740,8 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
               username: username.text.trim(),
               trackpadMode: trackpadMode,
               keyboardVisible: keyboardVisible,
-              clickKeys: clickKeys),
+              clickKeys: clickKeys,
+              trackpadArea: trackpadArea),
           password: password.text);
     }
     if (mounted) Navigator.pop(context, true);
@@ -790,6 +793,13 @@ class _ConnectionEditorPageState extends State<_ConnectionEditorPage> {
                 'Tắt: màn hình remote chiếm toàn bộ màn hình khi kết nối.'),
             value: keyboardVisible,
             onChanged: (v) => setState(() => keyboardVisible = v)),
+        SwitchListTile(
+            title: const Text('Vùng trackpad'),
+            subtitle: const Text(
+                'Chỉ khi mở màn hình ra: thêm vùng cảm ứng dưới bàn phím '
+                'để di chuột, dãy phím nhỏ lại. Màn hình remote không đổi.'),
+            value: trackpadArea,
+            onChanged: (v) => setState(() => trackpadArea = v)),
         // Step 36: which click keys flank Space, manual only (An: "Thay
         // hẳn, chỉnh tay thôi"). A connected mouse no longer hides them.
         const SizedBox(height: 8),
@@ -1643,7 +1653,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         // stay proportionate; FittedBox still shrinks long labels
         // (PgUp/PgDn/Home/End, Backspace, Enter) to fit their key.
         final rowHeight = _keyboardRowHeight(box.maxWidth, box.maxHeight);
-        kbLabelSize = (rowHeight * 0.30).clamp(12.0, 16.0);
         // Step 26, item 4: on a narrow (folded) screen the wide keys
         // shrink so the 1-unit letter/number keys get wider (their pixel
         // width is maxWidth / row total). Narrow = folded Fold6 (~378
@@ -1655,6 +1664,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         // +8%); a number key is 378/15.5 = 24.4px (+5%). The row height
         // is untouched (step 26, item 2 was cancelled).
         final narrow = box.maxWidth < 600;
+        // Step 37: dedicated trackpad area under the keyboard (An). Only
+        // when the phone is unfolded (wide): the strip height — and with
+        // it the remote screen — stays exactly the same, so the key rows
+        // shrink to make room. The area is 1.5 normal rows tall; the six
+        // key rows share the rest. In agent mode and when folded the area
+        // never shows, so keyRowHeight == rowHeight there.
+        final showTrackpadArea = widget.rdpMode &&
+            (widget.rdpConnection?.trackpadArea ?? false) &&
+            !narrow;
+        final trackpadHeight = showTrackpadArea ? rowHeight * 1.5 : 0.0;
+        final keyRowHeight = showTrackpadArea
+            ? (box.maxHeight - 8 - trackpadHeight) / 6
+            : rowHeight;
+        kbLabelSize = (keyRowHeight * 0.30).clamp(12.0, 16.0);
         // Step 36: the click keys are manual now (An: "Thay hẳn, chỉnh
         // tay thôi") — the per-connection `clickKeys` setting decides, and
         // a connected mouse no longer hides them. RDP mode only; agent
@@ -1677,7 +1700,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         final modU = narrow ? 1.15 : 1.25;
         final spaceU = narrow ? 4.0 : 4.5;
         Widget row(int index, List<Widget> keys) => SizedBox(
-            height: rowHeight,
+            height: keyRowHeight,
             child: Row(key: ValueKey('keyboard-row-$index'), children: keys));
         return Padding(
             padding: const EdgeInsets.all(4),
@@ -1760,6 +1783,30 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               ]),
               if (!widget.rdpMode)
                 row(6, [laptopKey('Click trái'), laptopKey('Click phải')]),
+              // Step 37: the trackpad area. Dragging it moves the PC
+              // cursor relatively through keyboardSwipe (the same Listener
+              // that watches the keys), two fingers scroll or right-click
+              // the same way. A plain tap is a left click at the cursor
+              // (GestureDetector: no key lives here, so a tap has nothing
+              // to type). It works whether or not 'Chế độ Trackpad' is
+              // on — that switch only controls swiping on the keys.
+              if (showTrackpadArea)
+                SizedBox(
+                    key: const ValueKey('trackpad-area'),
+                    height: trackpadHeight,
+                    child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => unawaited(rdpController
+                            .clickAtLastPosition('left')),
+                        child: Container(
+                            decoration: BoxDecoration(
+                                color: const Color(0xff1e1f23),
+                                borderRadius: BorderRadius.circular(12),
+                                border:
+                                    Border.all(color: Colors.white10)),
+                            child: const Center(
+                                child: Icon(Icons.touch_app_outlined,
+                                    color: Colors.white24, size: 20))))),
             ]))));
   });
 
