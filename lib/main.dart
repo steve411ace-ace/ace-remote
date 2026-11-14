@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'dart:ui' as ui;
+import 'package:flutter/gestures.dart';
 import 'package:home_widget/home_widget.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -1074,6 +1075,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Step 34: track whether a physical mouse is attached (drives the
+    // Left/Right key visibility in the keyboard below).
+    unawaited(MouseConnection.start());
     if (agent.displays.isNotEmpty) {
       final first = agent.displays.first;
       monitor = first.id;
@@ -1295,6 +1299,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     running = false;
     commandEpoch++;
     releaseDrag();
+    _mouseReleaseAll();
     timer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     frame?.dispose();
@@ -1587,7 +1592,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     return min(byWidth, byHeight);
   }
 
-  Widget keyboardPanel() => LayoutBuilder(builder: (context, box) {
+  Widget keyboardPanel() => ValueListenableBuilder<bool>(
+      valueListenable: MouseConnection.connected,
+      builder: (context, mouseConnected, _) =>
+          LayoutBuilder(builder: (context, box) {
         keyTargets.clear();
         keyLabels.clear();
         // Step 25, item 4: the keyboard adapts to the screen instead of
@@ -1619,6 +1627,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         // +8%); a number key is 378/15.5 = 24.4px (+5%). The row height
         // is untouched (step 26, item 2 was cancelled).
         final narrow = box.maxWidth < 600;
+        // Step 34: with a physical mouse connected the on-screen Left/Right
+        // click keys are redundant (the mouse has real buttons), so they
+        // are hidden and Space grows by their width (RDP mode only; agent
+        // mode keeps them). Row total unchanged, so every other key keeps
+        // its size.
+        final hideClickKeys = widget.rdpMode && mouseConnected;
         final delU = narrow ? 2.0 : 2.5;
         final backspaceU = narrow ? 1.5 : 2.0;
         final tabU = narrow ? 1.0 : 1.5;
@@ -1687,13 +1701,19 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               // Alt (1.25), same colors as the other keys. The labels are
               // distinct now, so no keyId is needed for the highlight.
               // Narrow mode: modifiers 1.15, Space 4.0 (row total 15.05).
+              // Step 34: with a mouse connected both keys are hidden and
+              // Space takes their width (see hideClickKeys above).
               row(5, [
                 laptopKey('Ctrl', units: modU, modifier: true),
                 laptopKey('Win', units: modU, modifier: true),
                 laptopKey('Alt', units: modU, modifier: true),
-                laptopKey('Left', units: modU, mouseButton: 'left'),
-                laptopKey('Space', units: spaceU, command: 'Space'),
-                laptopKey('Right', units: modU, mouseButton: 'right'),
+                if (!hideClickKeys)
+                  laptopKey('Left', units: modU, mouseButton: 'left'),
+                laptopKey('Space',
+                    units: hideClickKeys ? spaceU + modU * 2 : spaceU,
+                    command: 'Space'),
+                if (!hideClickKeys)
+                  laptopKey('Right', units: modU, mouseButton: 'right'),
                 laptopKey('Alt', units: modU, modifier: true),
                 laptopKey('Ctrl', units: modU, modifier: true),
                 for (final e in const {
@@ -1706,7 +1726,104 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               if (!widget.rdpMode)
                 row(6, [laptopKey('Click trái'), laptopKey('Click phải')]),
             ]))));
-      });
+      }),
+  );
+
+  // Step 34: physical-mouse state. The mouse drives the PC cursor ONLY
+  // over the remote screen (An: "trên phần màn hình pc thôi") — hover
+  // moves it absolutely, buttons press/release, the wheel scrolls. Touch
+  // keeps working exactly as before. The native touch path ignores
+  // SOURCE_MOUSE events, so a click never fires twice.
+  // _mouseHeldButtons is the Flutter button bitmask currently held down;
+  // _mouseLastPos is the last mouse position in surface physical pixels
+  // (for releasing held buttons when the pointer is cancelled).
+  int _mouseHeldButtons = 0;
+  Offset _mouseLastPos = Offset.zero;
+  static const _mouseButtonNames = <int, String>{
+    kPrimaryMouseButton: 'left',
+    kSecondaryMouseButton: 'right',
+    kMiddleMouseButton: 'middle',
+  };
+
+  Offset _mouseSurfacePos(PointerEvent e) =>
+      e.localPosition * MediaQuery.of(context).devicePixelRatio;
+
+  void _mousePress(PointerEvent e) {
+    final now = e.buttons;
+    final pos = _mouseSurfacePos(e);
+    _mouseLastPos = pos;
+    for (final entry in _mouseButtonNames.entries) {
+      if ((now & entry.key) != 0 && (_mouseHeldButtons & entry.key) == 0) {
+        unawaited(rdpController.sendMouseButton(pos, entry.value, true));
+      }
+    }
+    _mouseHeldButtons = now;
+  }
+
+  void _mouseRelease(PointerEvent e) {
+    final now = e.buttons;
+    final pos = _mouseSurfacePos(e);
+    _mouseLastPos = pos;
+    for (final entry in _mouseButtonNames.entries) {
+      if ((now & entry.key) == 0 && (_mouseHeldButtons & entry.key) != 0) {
+        unawaited(rdpController.sendMouseButton(pos, entry.value, false));
+      }
+    }
+    _mouseHeldButtons = now;
+  }
+
+  void _mouseReleaseAll() {
+    if (_mouseHeldButtons == 0) return;
+    final pos = _mouseLastPos;
+    for (final entry in _mouseButtonNames.entries) {
+      if ((_mouseHeldButtons & entry.key) != 0) {
+        unawaited(rdpController.sendMouseButton(pos, entry.value, false));
+      }
+    }
+    _mouseHeldButtons = 0;
+  }
+
+  Widget mouseControl(Widget child) {
+    return MouseRegion(
+      onHover: (e) {
+        if (!rdpController.isConnected) return;
+        _mouseLastPos = _mouseSurfacePos(e);
+        unawaited(rdpController.sendMouseMove(_mouseLastPos));
+      },
+      child: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (e) {
+          if (e.kind != PointerDeviceKind.mouse ||
+              !rdpController.isConnected) {
+            return;
+          }
+          _mousePress(e);
+        },
+        onPointerMove: (e) {
+          if (e.kind != PointerDeviceKind.mouse ||
+              !rdpController.isConnected) {
+            return;
+          }
+          _mousePress(e);
+          _mouseLastPos = _mouseSurfacePos(e);
+          unawaited(rdpController.sendMouseMove(_mouseLastPos));
+        },
+        onPointerUp: (e) {
+          if (e.kind != PointerDeviceKind.mouse) return;
+          _mouseRelease(e);
+        },
+        onPointerCancel: (_) => _mouseReleaseAll(),
+        onPointerSignal: (e) {
+          if (e is PointerScrollEvent && rdpController.isConnected) {
+            if (e.scrollDelta.dy != 0) {
+              unawaited(rdpController.scrollWheel(e.scrollDelta.dy > 0));
+            }
+          }
+        },
+        child: child,
+      ),
+    );
+  }
 
   /// Swipe-to-move wrapper for the RDP keyboard (step 23). The keyboard
   /// stays visible in both touch and trackpad modes; a drag across the keys
@@ -1913,9 +2030,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                   Expanded(
                       child: SizedBox(
                           key: const ValueKey('remote-half'),
-                          child: RdpConnectionPane(
+                          child: mouseControl(RdpConnectionPane(
                               controller: rdpController,
-                              initialConnection: widget.rdpConnection))),
+                              initialConnection: widget.rdpConnection)))),
                   if (kbVisible)
                     SizedBox(
                         key: const ValueKey('keyboard-half'),

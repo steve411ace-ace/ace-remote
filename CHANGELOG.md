@@ -6,6 +6,16 @@ trong `pubspec.yaml`): mỗi bản lên App Tester phải tăng `version:` trong
 release notes trên Firebase App Distribution (xem `scripts/release_notes.py`),
 và chặn build nếu quên tăng version (xem `scripts/check_version.py`).
 
+## [1.5.3+20] - 2026-11-14
+
+- Chuột rời cắm vào điện thoại giờ điều khiển được chuột máy tính trong
+  phiên RDP, chỉ trên phần màn hình PC (di chuột = di chuột PC, click
+  trái/phải/giữa, lăn chuột để cuộn). Trước đây chuột chỉ vào như chạm:
+  click thành chạm, không di được khi không bấm, không có click phải và
+  không lăn được. Khi có chuột cắm vào, 2 phím Left/Right trên bàn phím
+  ẩn đi và phím Space dài ra (chuột đã có nút thật rồi); rút chuột ra thì
+  2 phím hiện lại.
+
 ## [1.5.2+19] - 2026-11-14
 
 - Widget: vẽ lại icon nút "Bàn phím" dạng outline (cùng style với icon

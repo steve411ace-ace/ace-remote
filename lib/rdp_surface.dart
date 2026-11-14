@@ -48,6 +48,35 @@ class RdpController extends ValueNotifier<Map<String, dynamic>> {
         'moveRelative', {'dx': deltaPhysicalPx.dx, 'dy': deltaPhysicalPx.dy});
   }
 
+  /// Step 34: physical-mouse absolute move (surface physical pixels).
+  /// The native side converts to framebuffer pixels with the same
+  /// aspect-fit mapping touch uses; points in the letterbox are ignored.
+  Future<void> sendMouseMove(Offset surfacePhysicalPx) async {
+    try {
+      await _channel?.invokeMethod<void>('mouseMove',
+          {'x': surfacePhysicalPx.dx, 'y': surfacePhysicalPx.dy});
+    } on PlatformException {
+      // View detached mid-flight (e.g. leaving the page); a hover must
+      // never surface an error.
+    }
+  }
+
+  /// Step 34: physical-mouse button press/release at a surface-physical
+  /// position. [button] is 'left', 'right' or 'middle'.
+  Future<void> sendMouseButton(
+      Offset surfacePhysicalPx, String button, bool down) async {
+    try {
+      await _channel?.invokeMethod<void>('mouseButton', {
+        'x': surfacePhysicalPx.dx,
+        'y': surfacePhysicalPx.dy,
+        'button': button,
+        'down': down,
+      });
+    } on PlatformException {
+      // Same as sendMouseMove: never fail the UI for a detached view.
+    }
+  }
+
   /// Send one wheel notch at the current cursor position.
   Future<void> scrollWheel(bool down) async {
     await _channel?.invokeMethod<void>('scroll', {'down': down});
@@ -99,6 +128,38 @@ class RdpController extends ValueNotifier<Map<String, dynamic>> {
     trackpadMode.dispose();
     keyboardVisible.dispose();
     super.dispose();
+  }
+}
+
+/// Step 34: whether a physical mouse is currently connected to the phone.
+/// Backed by the native 'vn.aceremote.app/input' channel (Android
+/// InputDeviceListener): Dart asks once for the current state and native
+/// pushes 'mouseChanged' on plug/unplug. Without the channel (tests, web)
+/// it simply stays false.
+class MouseConnection {
+  static final ValueNotifier<bool> connected = ValueNotifier<bool>(false);
+  static MethodChannel? _channel;
+  static bool _started = false;
+
+  static Future<void> start() async {
+    if (_started) return;
+    _started = true;
+    _channel = const MethodChannel('vn.aceremote.app/input');
+    _channel!.setMethodCallHandler((call) async {
+      if (call.method == 'mouseChanged') {
+        final args = call.arguments;
+        if (args is Map) connected.value = args['connected'] == true;
+      }
+    });
+    try {
+      final current = await _channel!.invokeMethod<bool>('isMouseConnected');
+      if (current != null) connected.value = current;
+    } catch (_) {
+      // No native input channel (tests / non-Android): stay disconnected.
+      // Catch everything here — MissingPluginException is NOT a
+      // PlatformException, so `on PlatformException` would miss it and the
+      // uncaught error would fail the caller (seen in remote_test.dart).
+    }
   }
 }
 

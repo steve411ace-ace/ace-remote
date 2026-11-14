@@ -4,6 +4,7 @@ import 'package:ace_remote/agent.dart';
 import 'package:ace_remote/main.dart';
 import 'package:ace_remote/rdp_connections.dart';
 import 'package:ace_remote/rdp_surface.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:ace_remote/rdp_credentials.dart';
@@ -1148,6 +1149,208 @@ void main() {
     }
     tester.view.resetPhysicalSize();
     tester.view.resetDevicePixelRatio();
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'step 34: mouse connected hides Left/Right keys, Space grows (RDP)',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/35');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    addTearDown(() => MouseConnection.connected.value = false);
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    List<String?> rowLabels() => tester
+        .widgetList<Text>(find.descendant(
+            of: find.byKey(const ValueKey('keyboard-row-5')),
+            matching: find.byType(Text)))
+        .map((w) => w.data)
+        .toList();
+    Size keySize(String label) => tester.getSize(find
+        .ancestor(of: find.text(label), matching: find.byType(Container))
+        .first);
+    // Widths below are Container widths; each key also has 2dp padding on
+    // each side, so add 4 back to compare flex shares.
+    double share(String label) => keySize(label).width + 4;
+    // No mouse: the two click keys are there, Space is its normal width
+    // (4.5 units wide = 4.5x a letter key; ratio, not absolute px, so
+    // pixel rounding on flex shares does not matter).
+    expect(rowLabels(), [
+      'Ctrl',
+      'Win',
+      'Alt',
+      'Left',
+      'Space',
+      'Right',
+      'Alt',
+      'Ctrl',
+      '←',
+      '↓',
+      '→'
+    ]);
+    expect(share('Space') / share('A'), closeTo(4.5, 0.1));
+    // A mouse is plugged in: Left/Right disappear and Space takes their
+    // width (4.5 + 2 x 1.25 = 7.0 units); every other key keeps its size.
+    MouseConnection.connected.value = true;
+    await tester.pump();
+    expect(rowLabels(),
+        ['Ctrl', 'Win', 'Alt', 'Space', 'Alt', 'Ctrl', '←', '↓', '→']);
+    expect(find.text('Left'), findsNothing);
+    expect(find.text('Right'), findsNothing);
+    expect(share('Space') / share('A'), closeTo(7.0, 0.15));
+    // Unplug: the keys come back.
+    MouseConnection.connected.value = false;
+    await tester.pump();
+    expect(rowLabels(), [
+      'Ctrl',
+      'Win',
+      'Alt',
+      'Left',
+      'Space',
+      'Right',
+      'Alt',
+      'Ctrl',
+      '←',
+      '↓',
+      '→'
+    ]);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('step 34: agent mode keeps Left/Right keys with a mouse',
+      (tester) async {
+    addTearDown(() => MouseConnection.connected.value = false);
+    MouseConnection.connected.value = true;
+    final agent = Agent(baseUrl: defaultBaseUrl, mock: true);
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: false)));
+    await tester.pump();
+    // The mouse does not drive the agent-mode cursor, so the on-screen
+    // click keys stay.
+    expect(find.text('Left'), findsOneWidget);
+    expect(find.text('Right'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('step 34: RdpController mouseMove/mouseButton call the channel',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/36');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final controller = RdpController();
+    await controller.attach(36);
+    calls.clear();
+    await controller.sendMouseMove(const Offset(400, 100));
+    await controller.sendMouseButton(const Offset(400, 100), 'right', true);
+    await controller.sendMouseButton(const Offset(400, 100), 'right', false);
+    expect(calls.map((c) => c.method),
+        ['mouseMove', 'mouseButton', 'mouseButton']);
+    expect(calls[0].arguments, {'x': 400.0, 'y': 100.0});
+    expect(calls[1].arguments,
+        {'x': 400.0, 'y': 100.0, 'button': 'right', 'down': true});
+    expect(calls[2].arguments,
+        {'x': 400.0, 'y': 100.0, 'button': 'right', 'down': false});
+    controller.dispose();
+  });
+
+  testWidgets(
+      'step 34: mouse hover/click over the remote screen drives the PC cursor',
+      (tester) async {
+    const channel = MethodChannel('vn.aceremote.app/rdp/37');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') return {'state': 'idle'};
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    addTearDown(() => MouseConnection.connected.value = false);
+    // Pin dpr to 1.0 so logical px == surface px in the expectations below
+    // (the test binding defaults to 3.0).
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final agent = Agent(
+        baseUrl: defaultBaseUrl,
+        client: MockClient((_) async {
+          throw StateError('RDP must not contact agent');
+        }));
+    addTearDown(agent.dispose);
+    await tester.pumpWidget(MaterialApp(
+        home: RemotePage(agent: agent, pollMs: () => 1000, rdpMode: true)));
+    final controller =
+        tester.widget<RdpSurface>(find.byType(RdpSurface)).controller!;
+    await controller.attach(37);
+    await messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('state', {'state': 'connected'})),
+        (_) {});
+    await tester.pump();
+    expect(controller.isConnected, isTrue);
+    calls.clear();
+    final binding = TestWidgetsFlutterBinding.ensureInitialized();
+    // Hover over the remote screen: absolute move (dpr is 1.0 in tests,
+    // so logical px == surface px).
+    binding.handlePointerEvent(const PointerHoverEvent(
+      position: Offset(400, 100),
+      kind: PointerDeviceKind.mouse,
+    ));
+    await tester.pump();
+    expect(calls.map((c) => c.method), ['mouseMove']);
+    expect(calls.single.arguments, {'x': 400.0, 'y': 100.0});
+    calls.clear();
+    // Left button down then up: press + release, no touch tap.
+    binding.handlePointerEvent(const PointerDownEvent(
+      position: Offset(400, 100),
+      kind: PointerDeviceKind.mouse,
+      buttons: kPrimaryMouseButton,
+    ));
+    await tester.pump();
+    expect(calls.map((c) => c.method), ['mouseButton']);
+    expect(calls.single.arguments,
+        {'x': 400.0, 'y': 100.0, 'button': 'left', 'down': true});
+    calls.clear();
+    binding.handlePointerEvent(const PointerUpEvent(
+      position: Offset(400, 100),
+      kind: PointerDeviceKind.mouse,
+      buttons: 0,
+    ));
+    await tester.pump();
+    expect(calls.map((c) => c.method), ['mouseButton']);
+    expect(calls.single.arguments,
+        {'x': 400.0, 'y': 100.0, 'button': 'left', 'down': false});
+    calls.clear();
+    // Wheel: one notch per event.
+    binding.handlePointerEvent(const PointerScrollEvent(
+      position: Offset(400, 100),
+      kind: PointerDeviceKind.mouse,
+      scrollDelta: Offset(0, 120),
+    ));
+    await tester.pump();
+    expect(calls.map((c) => c.method), ['scroll']);
+    expect(calls.single.arguments, {'down': true});
     await tester.pumpWidget(const SizedBox());
   });
 

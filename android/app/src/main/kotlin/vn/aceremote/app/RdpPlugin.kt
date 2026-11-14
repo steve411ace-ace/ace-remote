@@ -8,10 +8,12 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.drawable.BitmapDrawable
+import android.hardware.input.InputManager
 import android.os.Handler
 import android.os.SystemClock
 import android.util.Log
 import android.os.Looper
+import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -29,10 +31,56 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 class RdpPlugin : FlutterPlugin {
+    // Step 34: whether a physical mouse is connected (Android
+    // InputDeviceListener), pushed to Dart so the on-screen Left/Right
+    // click keys can hide while a real mouse is attached.
+    private var inputChannel: MethodChannel? = null
+    private var inputManager: InputManager? = null
+    private var inputListener: InputManager.InputDeviceListener? = null
+    private var mouseConnected = false
+
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         binding.platformViewRegistry.registerViewFactory("vn.aceremote.app/rdp", RdpFactory(binding))
+        val context = binding.applicationContext
+        inputChannel = MethodChannel(binding.binaryMessenger, "vn.aceremote.app/input").apply {
+            setMethodCallHandler { call, result ->
+                if (call.method == "isMouseConnected") result.success(isMouseConnected())
+                else result.notImplemented()
+            }
+        }
+        inputManager = context.getSystemService(Context.INPUT_SERVICE) as? InputManager
+        mouseConnected = isMouseConnected()
+        inputListener = object : InputManager.InputDeviceListener {
+            override fun onInputDeviceAdded(deviceId: Int) = onDevicesChanged()
+            override fun onInputDeviceRemoved(deviceId: Int) = onDevicesChanged()
+            override fun onInputDeviceChanged(deviceId: Int) = onDevicesChanged()
+        }
+        inputListener?.let {
+            inputManager?.registerInputDeviceListener(it, Handler(Looper.getMainLooper()))
+        }
     }
-    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
+    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        inputListener?.let { inputManager?.unregisterInputDeviceListener(it) }
+        inputListener = null
+        inputManager = null
+        inputChannel?.setMethodCallHandler(null)
+        inputChannel = null
+    }
+
+    private fun onDevicesChanged() {
+        val now = isMouseConnected()
+        if (now != mouseConnected) {
+            mouseConnected = now
+            inputChannel?.invokeMethod("mouseChanged", mapOf("connected" to now))
+        }
+    }
+
+    private fun isMouseConnected(): Boolean {
+        val manager = inputManager ?: return false
+        return manager.inputDeviceIds.any { id ->
+            InputDevice.getDevice(id)?.supportsSource(InputDevice.SOURCE_MOUSE) == true
+        }
+    }
 }
 
 /** LibFreeRDP has one process listener. Keep GlobalApp notifications and route by handle. */
@@ -196,6 +244,19 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         lastX = trackpadCursorX.toInt(); lastY = trackpadCursorY.toInt()
         cursorInput(a, lastX, lastY, PTRFLAGS_MOVE)
     }
+    // Step 34: surface physical pixels -> framebuffer pixels with the same
+    // aspect-fit mapping onTouch uses (letterbox excluded). Null = the point
+    // is not on the remote desktop (letterbox) or there is no frame yet.
+    private fun surfaceToFramebuffer(xPx: Float, yPx: Float): Pair<Int, Int>? {
+        if (bitmap == null) return null
+        val scale = minOf(widthPx.toFloat() / bitmapWidth, heightPx.toFloat() / bitmapHeight)
+        if (scale <= 0f) return null
+        val x = (xPx - (widthPx - bitmapWidth * scale) / 2) / scale
+        val y = (yPx - (heightPx - bitmapHeight * scale) / 2) / scale
+        if (x < 0 || y < 0 || x >= bitmapWidth || y >= bitmapHeight) return null
+        return x.toInt() to y.toInt()
+    }
+
     private fun clickAt(a: Attempt, button: Int) {
         if (bitmap == null) return
         cursorInput(a, lastX, lastY, PTRFLAGS_MOVE)
@@ -299,6 +360,11 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
         return true
     }
     private fun onTouch(event: MotionEvent): Boolean = synchronized(lock) {
+        // Step 34: a physical mouse is owned by the Dart mouse layer
+        // (absolute moves, button down/up, wheel through the channel). The
+        // touch path must not also treat its clicks as finger taps, or
+        // every click would fire twice.
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return@synchronized false
         val a = inputAttempt()
         if (a == null || bitmap == null || !surfaceReady) {
             resetTouch(false)
@@ -494,6 +560,49 @@ private class RdpView(private val context: Context, id: Int, binding: FlutterPlu
                             val amount = if (down) -WHEEL_DELTA else WHEEL_DELTA
                             cursorInput(a, lastX, lastY, PTRFLAGS_WHEEL or
                                 (if (down) PTRFLAGS_WHEEL_NEGATIVE else 0) or (amount and 0xFF))
+                        }
+                    }
+                    result.success(null)
+                }
+                // Step 34: physical-mouse input from the Dart mouse layer
+                // (absolute position in surface physical pixels; the
+                // framebuffer conversion lives here, next to onTouch).
+                "mouseMove" -> {
+                    val x = (call.argument<Number>("x"))?.toFloat()
+                    val y = (call.argument<Number>("y"))?.toFloat()
+                    if (x != null && y != null) {
+                        synchronized(lock) {
+                            val a = inputAttempt()
+                            val fb = if (a != null) surfaceToFramebuffer(x, y) else null
+                            if (a != null && fb != null) {
+                                lastX = fb.first; lastY = fb.second; touched = true
+                                cursorInput(a, lastX, lastY, PTRFLAGS_MOVE)
+                            }
+                        }
+                    }
+                    result.success(null)
+                }
+                "mouseButton" -> {
+                    val x = (call.argument<Number>("x"))?.toFloat()
+                    val y = (call.argument<Number>("y"))?.toFloat()
+                    val button = call.argument<String>("button")
+                    val down = call.argument<Boolean>("down") ?: false
+                    if (x != null && y != null && button != null) {
+                        synchronized(lock) {
+                            val a = inputAttempt()
+                            val fb = if (a != null) surfaceToFramebuffer(x, y) else null
+                            if (a != null && fb != null) {
+                                lastX = fb.first; lastY = fb.second; touched = true
+                                val flag = when (button) {
+                                    "right" -> PTRFLAGS_RBUTTON
+                                    "middle" -> PTRFLAGS_MBUTTON
+                                    else -> PTRFLAGS_LBUTTON
+                                }
+                                // A press is MOVE-then-DOWN (like clickAt);
+                                // a release is the bare button flag.
+                                if (down) cursorInput(a, lastX, lastY, PTRFLAGS_MOVE)
+                                cursorInput(a, lastX, lastY, if (down) flag or PTRFLAGS_DOWN else flag)
+                            }
                         }
                     }
                     result.success(null)
